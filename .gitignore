@@ -15,3 +15,7 @@ bin
 .project
 .settings
 .vs
+
+# Regression harness build/log artifacts (fixtures themselves are committed)
+regression/*.class
+regression/fixtures/log/
