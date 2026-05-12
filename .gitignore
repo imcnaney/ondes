@@ -18,4 +18,5 @@ bin
 
 # Regression harness build/log artifacts (fixtures themselves are committed)
 regression/*.class
+regression/__pycache__/
 regression/fixtures/log/
