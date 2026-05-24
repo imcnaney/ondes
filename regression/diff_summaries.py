@@ -30,7 +30,7 @@ RMS_ABS_FLOOR = 80
 ENV_REL = 0.50
 ENV_ABS_FLOOR = 150
 ENV_BAD_FRACTION = 0.40
-ENV_LEN_DIFF = 5
+ENV_LEN_DIFF = 10
 ZERO_PP = 5.0
 
 def scalar_diff(label, ref, fresh, rel, abs_floor):

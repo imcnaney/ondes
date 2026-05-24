@@ -32,6 +32,7 @@ type Voice struct {
 	components map[string]any
 	wires      []*Wire
 	voiceMix   *Junction
+	waitForEnv bool // if true, note-off does not immediately remove the voice
 }
 
 func newVoice(s *Synth, ch, note, vel uint8) *Voice {
@@ -87,3 +88,10 @@ func (v *Voice) DispatchMidi(m MidiMsg) {
 		}
 	}
 }
+
+// SetWaitForEnv lets a component (typically env with exit: true) ask
+// the synth to keep the voice alive past note-off until the envelope
+// reports completion via Synth.QueueNoteEnd.
+func (v *Voice) SetWaitForEnv(b bool) { v.waitForEnv = b }
+
+func (v *Voice) WaitForEnv() bool { return v.waitForEnv }

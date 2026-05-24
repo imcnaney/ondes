@@ -30,16 +30,19 @@ func init() {
 // Wave is a phase-accumulator oscillator. The YAML `shape` field picks
 // which generator to use; some shapes (anharmonic) own additional phase
 // clocks beyond the fundamental.
+//
+// The wave doesn't silence itself on note-off - the synth either drops
+// the whole voice (bare wave patch) or an env in the same voice keeps
+// it alive and attenuates the release tail.
 type Wave struct {
-	shape  string
-	clock  *synth.PhaseClock // fundamental clock
-	extra  []*synth.PhaseClock
-	mults  []float64 // frequency multipliers for extra clocks, if any
-	out    *synth.Wire
-	voice  *synth.Voice
-	level  float64
-	active bool
-	gen    func() float64
+	shape string
+	clock *synth.PhaseClock // fundamental clock
+	extra []*synth.PhaseClock
+	mults []float64 // frequency multipliers for extra clocks, if any
+	out   *synth.Wire
+	voice *synth.Voice
+	level float64
+	gen   func() float64
 }
 
 // waveDefaultLevel is the empirical scale that makes a bare sine patch
@@ -94,7 +97,6 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 	}
 
 	w.out = v.NewWire(w.sample)
-	w.active = true
 	return nil
 }
 
@@ -111,24 +113,14 @@ func (w *Wave) retune(midiKey float64) {
 	}
 }
 
-// OnMidi resets the oscillator phase and re-pitches on note-on; silences
-// on note-off. Java's auto-envelope behavior is intentionally omitted
-// for v1 - sharp on/off transitions are tolerated by the regression
-// suite's 50ms RMS buckets.
+// OnMidi resets the oscillator phase and re-pitches on note-on.
 func (w *Wave) OnMidi(m synth.MidiMsg) {
-	switch {
-	case m.IsNoteOn():
+	if m.IsNoteOn() {
 		w.retune(float64(m.Data1))
-		w.active = true
-	case m.IsNoteOff():
-		w.active = false
 	}
 }
 
 func (w *Wave) sample() float64 {
-	if !w.active {
-		return 0
-	}
 	return w.gen() * w.level
 }
 

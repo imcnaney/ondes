@@ -17,12 +17,14 @@ import (
 	"ondes/synth"
 
 	// Register components.
+	_ "ondes/component/env"
 	_ "ondes/component/wave"
 )
 
 func main() {
 	patchName := flag.String("patch", "sine", "patch name to load")
-	tailSec := flag.Float64("tail", 0.0023, "extra seconds of audio rendered after the last MIDI event (Java default is ~100 samples)")
+	tailSec := flag.Float64("tail", 0.0023, "minimum extra seconds of audio after the last MIDI event (Java default ~100 samples)")
+	maxTailSec := flag.Float64("max-tail", 30.0, "hard cap on how long to keep rendering while voices are still active")
 	flag.Parse()
 
 	if flag.NArg() != 2 {
@@ -45,14 +47,15 @@ func main() {
 	}
 
 	last := events[len(events)-1].Sample
-	total := last + int64(*tailSec*float64(audio.SampleRate))
+	minEnd := last + int64(*tailSec*float64(audio.SampleRate))
+	maxEnd := last + int64(*maxTailSec*float64(audio.SampleRate))
 
 	s := synth.New(audio.SampleRate, p)
-	samples := make([]float64, total)
+	samples := make([]float64, 0, minEnd)
 
 	start := time.Now()
 	ei := 0
-	for i := int64(0); i < total; i++ {
+	for i := int64(0); ; i++ {
 		for ei < len(events) && events[ei].Sample <= i {
 			m := events[ei].Msg
 			ch := m.Status & 0x0F
@@ -64,8 +67,15 @@ func main() {
 			}
 			ei++
 		}
-		samples[i] = s.Step()
+		samples = append(samples, s.Step())
+		if i >= minEnd && ei >= len(events) && s.ActiveVoices() == 0 {
+			break
+		}
+		if i >= maxEnd {
+			break
+		}
 	}
+	total := int64(len(samples))
 	elapsed := time.Since(start)
 
 	if err := audio.WriteMono16(outWav, samples, audio.SampleRate); err != nil {

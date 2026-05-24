@@ -17,7 +17,14 @@ type Synth struct {
 
 	voices     map[uint8]*Voice
 	mainInputs []*Wire
+
+	// pendingEnds is drained at the top of each Step. Components (env
+	// with exit: true) queue voice removals here rather than mutating
+	// the voice map mid-iteration.
+	pendingEnds []pendingEnd
 }
+
+type pendingEnd struct{ ch, note uint8 }
 
 func New(sr int, patch Patch) *Synth {
 	return &Synth{
@@ -54,6 +61,26 @@ func (s *Synth) NoteOff(ch, note uint8) {
 		return
 	}
 	v.DispatchMidi(MidiMsg{Status: 0x80 | ch, Data1: note, Data2: 0})
+	if v.WaitForEnv() {
+		// Leave the voice connected; the envelope will queue removal
+		// when it finishes its release phase.
+		return
+	}
+	s.removeVoice(ch, note)
+}
+
+// QueueNoteEnd is called by envelopes (or other terminal components)
+// when a voice has finished sounding. The removal happens at the top of
+// the next Step.
+func (s *Synth) QueueNoteEnd(ch, note uint8) {
+	s.pendingEnds = append(s.pendingEnds, pendingEnd{ch, note})
+}
+
+func (s *Synth) removeVoice(_, note uint8) {
+	v, ok := s.voices[note]
+	if !ok {
+		return
+	}
 	out := v.MainOutput()
 	for i, w := range s.mainInputs {
 		if w == out {
@@ -66,6 +93,11 @@ func (s *Synth) NoteOff(ch, note uint8) {
 
 // Step advances one sample and returns the limited mix in [-1, +1].
 func (s *Synth) Step() float64 {
+	for _, pe := range s.pendingEnds {
+		s.removeVoice(pe.ch, pe.note)
+	}
+	s.pendingEnds = s.pendingEnds[:0]
+
 	s.instant.Next()
 	for _, v := range s.voices {
 		v.ResetWires()
