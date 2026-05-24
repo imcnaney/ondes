@@ -28,6 +28,7 @@ fade-octave             scale               fade-octave
 fourths                 scale               fourths
 repeater                scale               repeater
 pink                    scale               pink
+vibrato                 scale               vibrato
 
 sine-chord              chord               sine
 bell-organ-chord        chord               bell-organ
@@ -53,3 +54,4 @@ fade-octave-ce          close_encounters    fade-octave
 fourths-ce              close_encounters    fourths
 repeater-ce             close_encounters    repeater
 pink-ce                 close_encounters    pink
+vibrato-ce              close_encounters    vibrato

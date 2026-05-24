@@ -43,10 +43,16 @@ type Wave struct {
 	voice       *synth.Voice
 	level       float64
 	freqMul     float64 // applied to NoteFreq: 2^(offset/12) * 2^(detune/1200)
+	baseFreq    float64 // unmodulated frequency, set in retune
 	fixedFreq   bool    // true if `freq:` is set (LFO), skip note retune
 	unsigned    bool    // true if signed: false (unipolar output [0, 2*level])
 	namedInputs map[string][]*synth.Wire
-	gen         func() float64
+
+	// Log-frequency modulation (input-log). Inactive when logModExp == 0.
+	logAmpInv float64 // 1 / (input-log amp, in our float units)
+	logModExp float64 // semitones / 12, so 2^(ratio * logModExp) covers ±semitones
+
+	gen func() float64
 }
 
 // waveDefaultLevel is the empirical scale that makes a bare sine patch
@@ -78,9 +84,19 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 	w.clock = v.Synth().Instant().AddPhaseClock()
 	if f, ok := numeric(spec["freq"]); ok {
 		w.fixedFreq = true
-		w.clock.SetFrequency(f * w.freqMul)
+		w.baseFreq = f * w.freqMul
 	} else {
-		w.clock.SetFrequency(v.NoteFreq() * w.freqMul)
+		w.baseFreq = v.NoteFreq() * w.freqMul
+	}
+	w.clock.SetFrequency(w.baseFreq)
+
+	if il, ok := spec["input-log"].(map[string]any); ok {
+		amp, _ := numeric(il["amp"])
+		semis, _ := numeric(il["semitones"])
+		if amp > 0 {
+			w.logAmpInv = 32767.0 / amp
+			w.logModExp = semis / 12.0
+		}
 	}
 
 	switch shape {
@@ -146,16 +162,32 @@ func (w *Wave) namedInputSum(pin string) float64 {
 	return s
 }
 
+// modFreq applies log frequency modulation to the fundamental clock
+// (and any anharmonic-partial clocks). One-sample latency vs Java's
+// implementation - same as Java, since the phase clock has already
+// ticked for this sample before we get here.
+func (w *Wave) modFreq() {
+	if w.logModExp == 0 {
+		return
+	}
+	logInp := w.namedInputSum("log") * w.logAmpInv * w.logModExp
+	freq := w.baseFreq * math.Pow(2, logInp)
+	w.clock.SetFrequency(freq)
+	for i, c := range w.extra {
+		c.SetFrequency(freq * w.mults[i])
+	}
+}
+
 func (w *Wave) Output() *synth.Wire { return w.out }
 
 // retunes the fundamental and any extra clocks to track the new note,
 // scaled by the static offset/detune multiplier.
 func (w *Wave) retune(midiKey float64) {
-	base := 440 * math.Pow(2, (midiKey-69)/12) * w.freqMul
-	w.clock.SetFrequency(base)
+	w.baseFreq = 440 * math.Pow(2, (midiKey-69)/12) * w.freqMul
+	w.clock.SetFrequency(w.baseFreq)
 	w.clock.ResetPhase()
 	for i, c := range w.extra {
-		c.SetFrequency(base * w.mults[i])
+		c.SetFrequency(w.baseFreq * w.mults[i])
 		c.ResetPhase()
 	}
 }
@@ -169,6 +201,7 @@ func (w *Wave) OnMidi(m synth.MidiMsg) {
 }
 
 func (w *Wave) sample() float64 {
+	w.modFreq()
 	v := w.gen()
 	if w.unsigned {
 		// Java's WaveGen subclasses build signed [-amp,+amp] output by
