@@ -46,6 +46,9 @@ type Wave struct {
 	baseFreq    float64 // unmodulated frequency, set in retune
 	fixedFreq   bool    // true if `freq:` is set (LFO), skip note retune
 	unsigned    bool    // true if signed: false (unipolar output [0, 2*level])
+	velBase     float64 // velocity-base/100, default 0
+	velAmount   float64 // velocity-amount/100, default 1
+	velGain     float64 // current note's velocity multiplier (1 until first note-on)
 	namedInputs map[string][]*synth.Wire
 
 	// Log-frequency modulation (input-log). Inactive when logModExp == 0.
@@ -71,6 +74,14 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 	w.shape = shape
 
 	w.freqMul = 1
+	w.velAmount = 1
+	w.velGain = 1
+	if vb, ok := numeric(spec["velocity-base"]); ok {
+		w.velBase = vb / 100
+	}
+	if va, ok := numeric(spec["velocity-amount"]); ok {
+		w.velAmount = va / 100
+	}
 	if off, ok := numeric(spec["offset"]); ok {
 		w.freqMul *= math.Pow(2, off/12)
 	}
@@ -193,10 +204,16 @@ func (w *Wave) retune(midiKey float64) {
 }
 
 // OnMidi resets the oscillator phase and re-pitches on note-on. LFOs
-// (fixedFreq) keep their running phase across notes.
+// (fixedFreq) keep their running phase across notes and ignore velocity
+// (in Java they would be channel-context components that never receive
+// per-voice note-ons).
 func (w *Wave) OnMidi(m synth.MidiMsg) {
 	if m.IsNoteOn() && !w.fixedFreq {
 		w.retune(float64(m.Data1))
+		w.velGain = w.velBase + w.velAmount*float64(m.Data2)/128
+		if w.velGain > 1 {
+			w.velGain = 1
+		}
 	}
 }
 
@@ -215,7 +232,7 @@ func (w *Wave) sample() float64 {
 			v += 1
 		}
 	}
-	return v * w.level
+	return v * w.level * w.velGain
 }
 
 func sineGen(phase float64) float64 {

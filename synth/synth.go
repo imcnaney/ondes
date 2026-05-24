@@ -14,6 +14,7 @@ type Synth struct {
 	sr      int
 	patch   Patch
 	instant *Instant
+	limiter *Limiter
 
 	voices     map[uint8]*Voice
 	mainInputs []*Wire
@@ -31,6 +32,7 @@ func New(sr int, patch Patch) *Synth {
 		sr:      sr,
 		patch:   patch,
 		instant: NewInstant(sr),
+		limiter: NewLimiter(sr),
 		voices:  map[uint8]*Voice{},
 	}
 }
@@ -106,12 +108,7 @@ func (s *Synth) Step() float64 {
 	for _, w := range s.mainInputs {
 		sum += w.Get()
 	}
-	if sum > 1 {
-		sum = 1
-	} else if sum < -1 {
-		sum = -1
-	}
-	return sum
+	return s.limiter.Apply(sum)
 }
 
 func (s *Synth) ActiveVoices() int { return len(s.voices) }
