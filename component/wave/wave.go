@@ -35,14 +35,15 @@ func init() {
 // the whole voice (bare wave patch) or an env in the same voice keeps
 // it alive and attenuates the release tail.
 type Wave struct {
-	shape string
-	clock *synth.PhaseClock // fundamental clock
-	extra []*synth.PhaseClock
-	mults []float64 // frequency multipliers for extra clocks, if any
-	out   *synth.Wire
-	voice *synth.Voice
-	level float64
-	gen   func() float64
+	shape   string
+	clock   *synth.PhaseClock // fundamental clock
+	extra   []*synth.PhaseClock
+	mults   []float64 // frequency multipliers for extra clocks, if any
+	out     *synth.Wire
+	voice   *synth.Voice
+	level   float64
+	freqMul float64 // applied to NoteFreq: 2^(offset/12) * 2^(detune/1200)
+	gen     func() float64
 }
 
 // waveDefaultLevel is the empirical scale that makes a bare sine patch
@@ -59,8 +60,16 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 	}
 	w.shape = shape
 
+	w.freqMul = 1
+	if off, ok := numeric(spec["offset"]); ok {
+		w.freqMul *= math.Pow(2, off/12)
+	}
+	if det, ok := numeric(spec["detune"]); ok {
+		w.freqMul *= math.Pow(2, det/1200)
+	}
+
 	w.clock = v.Synth().Instant().AddPhaseClock()
-	w.clock.SetFrequency(v.NoteFreq())
+	w.clock.SetFrequency(v.NoteFreq() * w.freqMul)
 
 	switch shape {
 	case "sine":
@@ -102,9 +111,10 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 
 func (w *Wave) Output() *synth.Wire { return w.out }
 
-// retunes the fundamental and any extra clocks to track the new note.
+// retunes the fundamental and any extra clocks to track the new note,
+// scaled by the static offset/detune multiplier.
 func (w *Wave) retune(midiKey float64) {
-	base := 440 * math.Pow(2, (midiKey-69)/12)
+	base := 440 * math.Pow(2, (midiKey-69)/12) * w.freqMul
 	w.clock.SetFrequency(base)
 	w.clock.ResetPhase()
 	for i, c := range w.extra {
