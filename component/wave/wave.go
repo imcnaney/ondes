@@ -1,9 +1,12 @@
-// Package wave implements oscillator components. For now: sine only.
+// Package wave implements oscillator components: simple periodic shapes
+// (sine/saw/square/ramp), additive harmonic stacks, anharmonic stacks
+// (one phase clock per partial), and noise.
 package wave
 
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"strconv"
 	"strings"
 
@@ -25,15 +28,18 @@ func init() {
 }
 
 // Wave is a phase-accumulator oscillator. The YAML `shape` field picks
-// which generator function to use.
+// which generator to use; some shapes (anharmonic) own additional phase
+// clocks beyond the fundamental.
 type Wave struct {
 	shape  string
-	clock  *synth.PhaseClock
+	clock  *synth.PhaseClock // fundamental clock
+	extra  []*synth.PhaseClock
+	mults  []float64 // frequency multipliers for extra clocks, if any
 	out    *synth.Wire
 	voice  *synth.Voice
-	level  float64 // per-component scalar; matches Java's per-voice amplitude
+	level  float64
 	active bool
-	gen    func(phase float64) float64
+	gen    func() float64
 }
 
 // waveDefaultLevel is the empirical scale that makes a bare sine patch
@@ -49,23 +55,35 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 		return fmt.Errorf("wave: missing shape")
 	}
 	w.shape = shape
+
+	w.clock = v.Synth().Instant().AddPhaseClock()
+	w.clock.SetFrequency(v.NoteFreq())
+
 	switch shape {
 	case "sine":
-		w.gen = sineGen
+		w.gen = func() float64 { return sineGen(w.clock.Phase()) }
 	case "saw":
-		w.gen = sawGen
+		w.gen = func() float64 { return sawGen(w.clock.Phase()) }
 	case "square":
-		w.gen = squareGen
+		w.gen = func() float64 { return squareGen(w.clock.Phase()) }
 	case "ramp-up":
-		w.gen = rampUpGen
+		w.gen = func() float64 { return rampUpGen(w.clock.Phase()) }
 	case "ramp-down":
-		w.gen = rampDownGen
+		w.gen = func() float64 { return rampDownGen(w.clock.Phase()) }
 	case "harmonic":
-		params, err := parseHarmonicParams(spec)
+		params, err := parseWaveParams(spec)
 		if err != nil {
 			return err
 		}
-		w.gen = makeHarmonicGen(params)
+		w.gen = makeHarmonicGen(w, params)
+	case "anharmonic":
+		params, err := parseWaveParams(spec)
+		if err != nil {
+			return err
+		}
+		w.gen = makeAnharmonicGen(w, params)
+	case "noise":
+		w.gen = makeNoiseGen()
 	default:
 		return fmt.Errorf("wave: shape %q not yet implemented", shape)
 	}
@@ -75,14 +93,23 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 		w.level *= ls
 	}
 
-	w.clock = v.Synth().Instant().AddPhaseClock()
-	w.clock.SetFrequency(v.NoteFreq())
 	w.out = v.NewWire(w.sample)
 	w.active = true
 	return nil
 }
 
 func (w *Wave) Output() *synth.Wire { return w.out }
+
+// retunes the fundamental and any extra clocks to track the new note.
+func (w *Wave) retune(midiKey float64) {
+	base := 440 * math.Pow(2, (midiKey-69)/12)
+	w.clock.SetFrequency(base)
+	w.clock.ResetPhase()
+	for i, c := range w.extra {
+		c.SetFrequency(base * w.mults[i])
+		c.ResetPhase()
+	}
+}
 
 // OnMidi resets the oscillator phase and re-pitches on note-on; silences
 // on note-off. Java's auto-envelope behavior is intentionally omitted
@@ -91,8 +118,7 @@ func (w *Wave) Output() *synth.Wire { return w.out }
 func (w *Wave) OnMidi(m synth.MidiMsg) {
 	switch {
 	case m.IsNoteOn():
-		w.clock.SetFrequency(440 * math.Pow(2, (float64(m.Data1)-69)/12))
-		w.clock.ResetPhase()
+		w.retune(float64(m.Data1))
 		w.active = true
 	case m.IsNoteOff():
 		w.active = false
@@ -103,7 +129,7 @@ func (w *Wave) sample() float64 {
 	if !w.active {
 		return 0
 	}
-	return w.gen(w.clock.Phase()) * w.level
+	return w.gen() * w.level
 }
 
 func sineGen(phase float64) float64 {
@@ -130,23 +156,24 @@ func rampUpGen(phase float64) float64 { return 2*phase - 1 }
 
 func rampDownGen(phase float64) float64 { return 2*(1-phase) - 1 }
 
-// parseHarmonicParams reads either `preset:` (named preset) or `waves:`
+// parseWaveParams reads either `preset:` (named preset) or `waves:`
 // (list of mult/divisor tokens, possibly grouped per line) into a flat
-// even-length []float64. Mirrors HarmonicWaveGen.configure.
-func parseHarmonicParams(spec component.Spec) ([]float64, error) {
+// even-length []float64. Mirrors HarmonicWaveGen.configure and the
+// AnharmonicWaveGen variant of same.
+func parseWaveParams(spec component.Spec) ([]float64, error) {
 	if p, ok := spec["preset"].(string); ok {
 		if params, ok := harmonicPresets[p]; ok {
 			return params, nil
 		}
-		return nil, fmt.Errorf("wave: unknown harmonic preset %q", p)
+		return nil, fmt.Errorf("wave: unknown preset %q", p)
 	}
 	raw, ok := spec["waves"]
 	if !ok {
-		return nil, fmt.Errorf("wave: harmonic shape needs preset: or waves:")
+		return nil, fmt.Errorf("wave: this shape needs preset: or waves:")
 	}
 	list, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("wave: harmonic waves must be a list")
+		return nil, fmt.Errorf("wave: waves must be a list")
 	}
 	var tokens []string
 	for _, el := range list {
@@ -162,30 +189,89 @@ func parseHarmonicParams(spec component.Spec) ([]float64, error) {
 		}
 	}
 	if len(tokens)%2 != 0 || len(tokens) == 0 {
-		return nil, fmt.Errorf("wave: harmonic waves must be pairs of (mult, divisor), got %d tokens", len(tokens))
+		return nil, fmt.Errorf("wave: waves must be pairs of (mult, divisor), got %d tokens", len(tokens))
 	}
 	params := make([]float64, len(tokens))
 	for i, t := range tokens {
 		f, err := strconv.ParseFloat(t, 64)
 		if err != nil {
-			return nil, fmt.Errorf("wave: harmonic param %q: %w", t, err)
+			return nil, fmt.Errorf("wave: param %q: %w", t, err)
 		}
 		params[i] = f
 	}
 	return params, nil
 }
 
-// makeHarmonicGen returns a closure that sums sin(2*pi*phase*mult)/divisor
-// over each (mult, divisor) pair. Java caches a 1024-sample lookup
-// table here for speed; we just call math.Sin directly until profiling
-// says otherwise.
-func makeHarmonicGen(params []float64) func(phase float64) float64 {
-	return func(phase float64) float64 {
+// makeHarmonicGen sums sin(2*pi*phase*mult)/divisor over each pair,
+// using the fundamental phase clock. Non-integer multipliers fold back
+// to phase 0 with the base, producing the buzzy phase-alignment noted
+// in HarmonicWaveGen's doc.
+func makeHarmonicGen(w *Wave, params []float64) func() float64 {
+	return func() float64 {
+		phase := w.clock.Phase()
 		var sum float64
 		for i := 0; i+1 < len(params); i += 2 {
 			sum += math.Sin(2*math.Pi*phase*params[i]) / params[i+1]
 		}
 		return sum
+	}
+}
+
+// makeAnharmonicGen separates the input into integer-mult (harmonic,
+// summed against the fundamental phase clock) and non-integer-mult
+// (anharmonic, each with its own clock running at base*mult so phase
+// alignment never collapses).
+func makeAnharmonicGen(w *Wave, params []float64) func() float64 {
+	var harm, anharm []float64
+	for i := 0; i+1 < len(params); i += 2 {
+		if math.Mod(params[i], 1.0) == 0 {
+			harm = append(harm, params[i], params[i+1])
+		} else {
+			anharm = append(anharm, params[i], params[i+1])
+		}
+	}
+	for i := 0; i+1 < len(anharm); i += 2 {
+		c := w.voice.Synth().Instant().AddPhaseClock()
+		c.SetFrequency(w.clock.Frequency() * anharm[i])
+		w.extra = append(w.extra, c)
+		w.mults = append(w.mults, anharm[i])
+	}
+	return func() float64 {
+		var sum float64
+		phase := w.clock.Phase()
+		for i := 0; i+1 < len(harm); i += 2 {
+			sum += math.Sin(2*math.Pi*phase*harm[i]) / harm[i+1]
+		}
+		for i := 0; i+1 < len(anharm); i += 2 {
+			sum += math.Sin(2*math.Pi*w.extra[i/2].Phase()) / anharm[i+1]
+		}
+		return sum
+	}
+}
+
+// makeNoiseGen mimics NoiseWaveGen: latches at two hold-lengths (1 and
+// 23 samples), averages, then low-passes via lastValue += diff/20. The
+// random seed is unspecified per run, matching Java's `new Random()`.
+func makeNoiseGen() func() float64 {
+	rng := rand.New(rand.NewSource(rand.Int63()))
+	holds := []int{1, 23}
+	latch := make([]float64, len(holds))
+	var last float64
+	var n int64
+	return func() float64 {
+		n++
+		for i, h := range holds {
+			if n%int64(h) == 0 {
+				latch[i] = rng.Float64()*2 - 1
+			}
+		}
+		var s float64
+		for _, v := range latch {
+			s += v
+		}
+		cur := s / float64(len(latch))
+		last += (cur - last) / 20
+		return last * 3
 	}
 }
 
