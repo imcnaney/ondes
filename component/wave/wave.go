@@ -35,15 +35,18 @@ func init() {
 // the whole voice (bare wave patch) or an env in the same voice keeps
 // it alive and attenuates the release tail.
 type Wave struct {
-	shape   string
-	clock   *synth.PhaseClock // fundamental clock
-	extra   []*synth.PhaseClock
-	mults   []float64 // frequency multipliers for extra clocks, if any
-	out     *synth.Wire
-	voice   *synth.Voice
-	level   float64
-	freqMul float64 // applied to NoteFreq: 2^(offset/12) * 2^(detune/1200)
-	gen     func() float64
+	shape       string
+	clock       *synth.PhaseClock // fundamental clock
+	extra       []*synth.PhaseClock
+	mults       []float64 // frequency multipliers for extra clocks, if any
+	out         *synth.Wire
+	voice       *synth.Voice
+	level       float64
+	freqMul     float64 // applied to NoteFreq: 2^(offset/12) * 2^(detune/1200)
+	fixedFreq   bool    // true if `freq:` is set (LFO), skip note retune
+	unsigned    bool    // true if signed: false (unipolar output [0, 2*level])
+	namedInputs map[string][]*synth.Wire
+	gen         func() float64
 }
 
 // waveDefaultLevel is the empirical scale that makes a bare sine patch
@@ -54,6 +57,7 @@ const waveDefaultLevel = 0.025
 
 func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 	w.voice = v
+	w.namedInputs = map[string][]*synth.Wire{}
 	shape, _ := spec["shape"].(string)
 	if shape == "" {
 		return fmt.Errorf("wave: missing shape")
@@ -67,9 +71,17 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 	if det, ok := numeric(spec["detune"]); ok {
 		w.freqMul *= math.Pow(2, det/1200)
 	}
+	if signed, ok := spec["signed"].(bool); ok && !signed {
+		w.unsigned = true
+	}
 
 	w.clock = v.Synth().Instant().AddPhaseClock()
-	w.clock.SetFrequency(v.NoteFreq() * w.freqMul)
+	if f, ok := numeric(spec["freq"]); ok {
+		w.fixedFreq = true
+		w.clock.SetFrequency(f * w.freqMul)
+	} else {
+		w.clock.SetFrequency(v.NoteFreq() * w.freqMul)
+	}
 
 	switch shape {
 	case "sine":
@@ -96,17 +108,42 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 		w.gen = makeAnharmonicGen(w, params)
 	case "noise":
 		w.gen = makeNoiseGen()
+	case "pwm":
+		w.gen = makePWMGen(w, spec)
 	default:
 		return fmt.Errorf("wave: shape %q not yet implemented", shape)
 	}
 
-	w.level = waveDefaultLevel
+	if lo, ok := numeric(spec["level-override"]); ok {
+		// Java treats level-override as raw int16 amplitude; map to our float scale.
+		w.level = lo / 32767.0
+	} else {
+		w.level = waveDefaultLevel
+	}
 	if ls, ok := numeric(spec["level-scale"]); ok {
 		w.level *= ls
 	}
 
 	w.out = v.NewWire(w.sample)
 	return nil
+}
+
+// AddInput attaches a modulation source on a named pin (e.g. "pwm").
+// PWM-type waves consume these; basic shapes ignore them.
+func (w *Wave) AddInput(selectName string, src *synth.Wire) {
+	if selectName == "" {
+		selectName = "main"
+	}
+	w.namedInputs[selectName] = append(w.namedInputs[selectName], src)
+}
+
+// namedInputSum sums all wires attached to the given pin.
+func (w *Wave) namedInputSum(pin string) float64 {
+	var s float64
+	for _, in := range w.namedInputs[pin] {
+		s += in.Get()
+	}
+	return s
 }
 
 func (w *Wave) Output() *synth.Wire { return w.out }
@@ -123,15 +160,29 @@ func (w *Wave) retune(midiKey float64) {
 	}
 }
 
-// OnMidi resets the oscillator phase and re-pitches on note-on.
+// OnMidi resets the oscillator phase and re-pitches on note-on. LFOs
+// (fixedFreq) keep their running phase across notes.
 func (w *Wave) OnMidi(m synth.MidiMsg) {
-	if m.IsNoteOn() {
+	if m.IsNoteOn() && !w.fixedFreq {
 		w.retune(float64(m.Data1))
 	}
 }
 
 func (w *Wave) sample() float64 {
-	return w.gen() * w.level
+	v := w.gen()
+	if w.unsigned {
+		// Java's WaveGen subclasses build signed [-amp,+amp] output by
+		// doubling a natural [0, amp] form (ramp-up/down) or by
+		// centering a [-amp, +amp] form (saw, square, sine). Unsigned
+		// reverses to: ramp-up/down → [0, amp]; saw/square → [0, 2*amp].
+		switch w.shape {
+		case "ramp-up", "ramp-down":
+			v = (v + 1) * 0.5
+		default:
+			v += 1
+		}
+	}
+	return v * w.level
 }
 
 func sineGen(phase float64) float64 {
@@ -248,6 +299,38 @@ func makeAnharmonicGen(w *Wave, params []float64) func() float64 {
 			sum += math.Sin(2*math.Pi*w.extra[i/2].Phase()) / anharm[i+1]
 		}
 		return sum
+	}
+}
+
+// makePWMGen builds a pulse-width-modulated square. mod-percent is the
+// peak swing of the duty cycle (0-100, but in Java's code the
+// expression is `dutyCycle + (modPercent/200) * mod` so 100% mod-percent
+// swings the duty by +/- 0.5). input-amp normalizes the modulation
+// input back to [-1, +1] (it's the amplitude the upstream LFO is
+// expected to produce).
+func makePWMGen(w *Wave, spec component.Spec) func() float64 {
+	dutyCycle := 0.5
+	var modPercent, inputAmpInv float64
+	if v, ok := numeric(spec["mod-percent"]); ok {
+		if v >= 0 && v <= 100 {
+			modPercent = v
+		}
+	}
+	if v, ok := numeric(spec["input-amp"]); ok && v != 0 {
+		// input-amp is in Java-int units; our LFO outputs float64 in
+		// [-amp/32767, +amp/32767] when level-override is set, so we
+		// need the same scale on the input side: the upstream's
+		// my-float matches Java's int/32767, so inputAmpInv must be
+		// in the same units.
+		inputAmpInv = 32767.0 / v
+	}
+	return func() float64 {
+		mod := w.namedInputSum("pwm") * inputAmpInv
+		duty := dutyCycle + (modPercent/200.0)*mod
+		if w.clock.Phase() > duty {
+			return 1
+		}
+		return -1
 	}
 }
 
