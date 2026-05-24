@@ -19,6 +19,7 @@ import (
 	// Register components.
 	_ "ondes/component/env"
 	_ "ondes/component/filter"
+	_ "ondes/component/opamp"
 	_ "ondes/component/wave"
 )
 
