@@ -33,6 +33,13 @@ type Voice struct {
 	wires      []*Wire
 	voiceMix   *Junction
 	waitForEnv bool // if true, note-off does not immediately remove the voice
+
+	// draining is set once an exit-envelope has reached zero: the voice
+	// is finished sounding directly, but downstream effects (echo) may
+	// still be ringing. While draining, the voice stays in the mix until
+	// its output has been silent for endingZeros consecutive samples.
+	draining  bool
+	zeroCount int
 }
 
 func newVoice(s *Synth, ch, note, vel uint8) *Voice {
@@ -95,3 +102,7 @@ func (v *Voice) DispatchMidi(m MidiMsg) {
 func (v *Voice) SetWaitForEnv(b bool) { v.waitForEnv = b }
 
 func (v *Voice) WaitForEnv() bool { return v.waitForEnv }
+
+// StartDraining marks the voice as finished at the source; it stays in
+// the mix until its tail (echo, reverb) decays to silence.
+func (v *Voice) StartDraining() { v.draining = true }
