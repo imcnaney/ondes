@@ -1,0 +1,25 @@
+# Demonstrates the `smooth` component: a non-linear smoother that
+# fattens the bass of whatever feeds it. Controller A (CC 12) modulates
+# the smoothing amount via smooth.range.
+
+ctrl12:
+  type: controller
+  number: 12  # controller A
+  amp: 1000
+  out: smooth.range
+
+osc:
+  midi: note-on
+  type: wave
+  shape: ramp-up
+  level-scale: 1
+  out: smooth
+
+smooth:
+  type: smooth
+  amount: 2
+  input-amount:
+    amp: 1000
+    range: 20
+  level-scale: .6
+  out: main

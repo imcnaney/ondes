@@ -55,3 +55,9 @@ fourths-ce              close_encounters    fourths
 repeater-ce             close_encounters    repeater
 pink-ce                 close_encounters    pink
 vibrato-ce              close_encounters    vibrato
+
+# sustain.mid: long held notes + controller-A sweep, for slow/ambient
+# and modulation-driven patches (smooth, balancer).
+smooth                  sustain             smooth
+balancer                sustain             balancer
+ocean2                  sustain             ocean2
