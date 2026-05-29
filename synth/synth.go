@@ -41,6 +41,13 @@ type Synth struct {
 	// apply: the same patch fails identically on every note, so we log
 	// the first occurrence and stay quiet thereafter.
 	applyErrLogged bool
+
+	// ccState holds the most recent control-change value per (channel,
+	// controller). Java controllers are channel-context and persist
+	// across notes; our voices are per-note, so when a voice is created
+	// we replay the channel's current CC state into it. Keyed by
+	// uint16(channel)<<8 | controller.
+	ccState map[uint16]uint8
 }
 
 type pendingEnd struct{ ch, note uint8 }
@@ -52,6 +59,7 @@ func New(sr int, patch Patch) *Synth {
 		instant: NewInstant(sr),
 		limiter: NewLimiter(sr),
 		voices:  map[uint8]*Voice{},
+		ccState: map[uint16]uint8{},
 	}
 }
 
@@ -80,6 +88,24 @@ func (s *Synth) NoteOn(ch, note, vel uint8) {
 	}
 	s.voices[note] = v
 	v.DispatchMidi(MidiMsg{Status: 0x90 | ch, Data1: note, Data2: vel})
+	// Replay the channel's current controller state so a voice created
+	// mid-sweep starts at the live CC value rather than zero.
+	for key, val := range s.ccState {
+		if uint8(key>>8) != ch {
+			continue
+		}
+		v.DispatchMidi(MidiMsg{Status: 0xB0 | ch, Data1: uint8(key), Data2: val})
+	}
+}
+
+// ControlChange records a control-change value for the channel and
+// dispatches it to every active voice, so controller components update.
+func (s *Synth) ControlChange(ch, cc, val uint8) {
+	s.ccState[uint16(ch)<<8|uint16(cc)] = val
+	msg := MidiMsg{Status: 0xB0 | ch, Data1: cc, Data2: val}
+	for _, v := range s.voices {
+		v.DispatchMidi(msg)
+	}
 }
 
 func (s *Synth) NoteOff(ch, note uint8) {

@@ -135,6 +135,8 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 		w.gen = makeAnharmonicGen(w, params)
 	case "noise":
 		w.gen = makeNoiseGen()
+	case "pink":
+		w.gen = makePinkGen()
 	case "pwm":
 		w.gen = makePWMGen(w, spec)
 	default:
@@ -406,6 +408,41 @@ func makeNoiseGen() func() float64 {
 		}
 		cur := s / float64(len(latch))
 		last += (cur - last) / 20
+		return last * 3
+	}
+}
+
+// makePinkGen mimics PinkNoiseGen: same two-hold latch/average as the
+// noise gen, but the output chases the latch mean by a minimum step
+// rather than a fixed fraction. The step is max(|diff|, 3)*sign(diff) in
+// Java's int units (ampBase 1024), so the minimum step normalizes to
+// 3/1024; large diffs snap fully to the target. The enforced minimum
+// keeps the signal perpetually jittery - the characteristic pink "static".
+func makePinkGen() func() float64 {
+	rng := rand.New(rand.NewSource(rand.Int63()))
+	holds := []int{1, 23}
+	latch := make([]float64, len(holds))
+	var last float64
+	var n int64
+	const minStep = 3.0 / 1024.0
+	return func() float64 {
+		n++
+		for i, h := range holds {
+			if n%int64(h) == 0 {
+				latch[i] = rng.Float64()*2 - 1
+			}
+		}
+		var s float64
+		for _, v := range latch {
+			s += v
+		}
+		cur := s / float64(len(latch))
+		diff := cur - last
+		if diff > 0 {
+			last += math.Max(diff, minStep)
+		} else if diff < 0 {
+			last -= math.Max(-diff, minStep)
+		}
 		return last * 3
 	}
 }

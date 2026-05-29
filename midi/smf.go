@@ -73,7 +73,7 @@ func ReadFile(path string, sampleRate int) ([]Event, error) {
 			continue
 		}
 
-		var ch, key, vel uint8
+		var ch, key, vel, cc, ccVal uint8
 		switch {
 		case te.msg.GetNoteOn(&ch, &key, &vel):
 			out = append(out, Event{
@@ -84,6 +84,11 @@ func ReadFile(path string, sampleRate int) ([]Event, error) {
 			out = append(out, Event{
 				Sample: int64(curSec*float64(sampleRate) + 0.5),
 				Msg:    synth.MidiMsg{Status: 0x80 | ch, Data1: key, Data2: 0},
+			})
+		case te.msg.GetControlChange(&ch, &cc, &ccVal):
+			out = append(out, Event{
+				Sample: int64(curSec*float64(sampleRate) + 0.5),
+				Msg:    synth.MidiMsg{Status: 0xB0 | ch, Data1: cc, Data2: ccVal},
 			})
 		}
 	}

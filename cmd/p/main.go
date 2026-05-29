@@ -17,6 +17,7 @@ import (
 	"ondes/synth"
 
 	// Register components.
+	_ "ondes/component/balancer"
 	_ "ondes/component/controller"
 	_ "ondes/component/echo"
 	_ "ondes/component/env"
@@ -24,6 +25,7 @@ import (
 	_ "ondes/component/midinote"
 	_ "ondes/component/mix"
 	_ "ondes/component/opamp"
+	_ "ondes/component/smooth"
 	_ "ondes/component/wave"
 )
 
@@ -70,6 +72,8 @@ func main() {
 				s.NoteOn(ch, m.Data1, m.Data2)
 			case m.IsNoteOff():
 				s.NoteOff(ch, m.Data1)
+			case m.Status&0xF0 == 0xB0:
+				s.ControlChange(ch, m.Data1, m.Data2)
 			}
 			ei++
 		}

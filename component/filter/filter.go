@@ -30,6 +30,18 @@ type Filter struct {
 	levelScale float64
 	sampleRate float64
 
+	// sinc-only state: a running-average (box) low-pass. The buffer
+	// spans one period of `sincFreq` (sampleRate/freq samples); its mean
+	// is the output. With sincMidi set, note-on retunes freq to the
+	// played note. freq==0 means pass-through (buffer nil).
+	sincFreq    float64
+	sincMidi    bool
+	sincBuf     []float64
+	sincBufLen  int
+	sincBufIdx  int
+	sincSum     float64
+	sincFilling bool // true until the buffer has filled once (outputs 0 meanwhile)
+
 	// biquad-only state
 	bqFreq, bqQ             float64
 	bqFreqOffset, bqQOffset float64
@@ -46,6 +58,16 @@ func (f *Filter) Configure(spec component.Spec, v *synth.Voice, _ string) error 
 
 	shape, _ := spec["shape"].(string)
 	switch shape {
+	case "", "sinc":
+		// Java's FilterMaker defaults a missing shape to "sinc".
+		if fr, ok := numeric(spec["freq"]); ok {
+			f.sincFreq = fr
+		}
+		if _, ok := spec["midi"]; ok {
+			f.sincMidi = true
+		}
+		f.sincReset()
+		f.out = v.NewWire(f.computeSinc)
 	case "iir":
 		key, _ := spec["key"].(string)
 		if key == "" {
@@ -103,6 +125,61 @@ func (f *Filter) Configure(spec component.Spec, v *synth.Voice, _ string) error 
 }
 
 func (f *Filter) Output() *synth.Wire { return f.out }
+
+// OnMidi retunes a sinc filter to the played note (Java's SincFilter
+// .noteON). Only sinc filters declared with `midi: note-on` respond;
+// iir/biquad use fixed coefficients and ignore notes.
+func (f *Filter) OnMidi(m synth.MidiMsg) {
+	if f.sincMidi && m.IsNoteOn() {
+		f.sincFreq = 440 * math.Pow(2, (float64(m.Data1)-69)/12)
+		f.sincReset()
+	}
+}
+
+// sincReset (re)allocates the running-average buffer for the current
+// frequency. freq==0 leaves the buffer nil, making the filter a
+// pass-through (matching Java's arraySize()==0 case).
+func (f *Filter) sincReset() {
+	if f.sincFreq > 0 {
+		f.sincBufLen = int(f.sampleRate / f.sincFreq)
+		f.sincBuf = make([]float64, f.sincBufLen)
+		f.sincBufIdx = 0
+		f.sincSum = 0
+		f.sincFilling = true
+	} else {
+		f.sincBuf = nil
+	}
+}
+
+// sincNextAverage feeds n into the circular buffer and returns the
+// running mean. It outputs 0 until the buffer has filled once, which
+// avoids a startup transient (matching Java's `first` flag).
+func (f *Filter) sincNextAverage(n float64) float64 {
+	if f.sincBuf == nil {
+		return n
+	}
+	if !f.sincFilling {
+		f.sincSum -= f.sincBuf[f.sincBufIdx]
+	}
+	if f.sincBufIdx == f.sincBufLen-1 {
+		f.sincFilling = false
+	}
+	f.sincSum += n
+	f.sincBuf[f.sincBufIdx] = n
+	f.sincBufIdx = (f.sincBufIdx + 1) % f.sincBufLen
+	if f.sincFilling {
+		return 0
+	}
+	return f.sincSum / float64(f.sincBufLen)
+}
+
+func (f *Filter) computeSinc() float64 {
+	var x float64
+	for _, w := range f.inputs {
+		x += w.Get()
+	}
+	return f.sincNextAverage(f.levelScale * x)
+}
 
 func (f *Filter) AddInput(sel string, w *synth.Wire) {
 	switch sel {
