@@ -1,6 +1,9 @@
 package synth
 
-import "math"
+import (
+	"log"
+	"math"
+)
 
 // silenceThreshold is the voice-output magnitude below which a sample
 // rounds to int16 zero (1/32767). endingZeros is how many consecutive
@@ -33,6 +36,11 @@ type Synth struct {
 	// with exit: true) queue voice removals here rather than mutating
 	// the voice map mid-iteration.
 	pendingEnds []pendingEnd
+
+	// applyErrLogged suppresses repeat logging when a patch fails to
+	// apply: the same patch fails identically on every note, so we log
+	// the first occurrence and stay quiet thereafter.
+	applyErrLogged bool
 }
 
 type pendingEnd struct{ ch, note uint8 }
@@ -62,7 +70,12 @@ func (s *Synth) NoteOn(ch, note, vel uint8) {
 	}
 	v := newVoice(s, ch, note, vel)
 	if err := s.patch.Apply(v); err != nil {
-		// Patch failed; drop this note. Real engine will log.
+		// Patch failed (e.g. an unknown component type); drop this note.
+		// Log once - the same patch fails the same way on every note.
+		if !s.applyErrLogged {
+			log.Printf("synth: dropping notes, patch failed to apply: %v", err)
+			s.applyErrLogged = true
+		}
 		return
 	}
 	s.voices[note] = v
