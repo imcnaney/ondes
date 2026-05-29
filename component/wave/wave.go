@@ -27,6 +27,64 @@ func init() {
 	component.Register("wave", func() component.Component { return &Wave{} })
 }
 
+// genFactory builds a shape's per-sample generator from the wave and its
+// spec, returning an error for bad config. It is the wave-shape analogue
+// of component.Factory (and of Java's WaveMaker name->class registry).
+type genFactory func(w *Wave, spec component.Spec) (func() float64, error)
+
+// waveGens maps a YAML `shape` value to its generator factory. Shapes
+// register here from init() instead of living in a Configure switch, so
+// adding a shape is a self-contained registration (and could move to its
+// own file) rather than an edit to the dispatch site.
+var waveGens = map[string]genFactory{}
+
+func registerShape(name string, f genFactory) {
+	if _, dup := waveGens[name]; dup {
+		panic("wave: duplicate shape registration for " + name)
+	}
+	waveGens[name] = f
+}
+
+// registerPhaseShape registers a simple periodic shape that is fully
+// defined by a phase->amplitude function over the fundamental clock.
+func registerPhaseShape(name string, fn func(phase float64) float64) {
+	registerShape(name, func(w *Wave, _ component.Spec) (func() float64, error) {
+		return func() float64 { return fn(w.clock.Phase()) }, nil
+	})
+}
+
+func init() {
+	registerPhaseShape("sine", sineGen)
+	registerPhaseShape("saw", sawGen)
+	registerPhaseShape("square", squareGen)
+	registerPhaseShape("ramp-up", rampUpGen)
+	registerPhaseShape("ramp-down", rampDownGen)
+
+	registerShape("harmonic", func(w *Wave, spec component.Spec) (func() float64, error) {
+		params, err := parseWaveParams(spec)
+		if err != nil {
+			return nil, err
+		}
+		return makeHarmonicGen(w, params), nil
+	})
+	registerShape("anharmonic", func(w *Wave, spec component.Spec) (func() float64, error) {
+		params, err := parseWaveParams(spec)
+		if err != nil {
+			return nil, err
+		}
+		return makeAnharmonicGen(w, params), nil
+	})
+	registerShape("noise", func(_ *Wave, _ component.Spec) (func() float64, error) {
+		return makeNoiseGen(), nil
+	})
+	registerShape("pink", func(_ *Wave, _ component.Spec) (func() float64, error) {
+		return makePinkGen(), nil
+	})
+	registerShape("pwm", func(w *Wave, spec component.Spec) (func() float64, error) {
+		return makePWMGen(w, spec), nil
+	})
+}
+
 // Wave is a phase-accumulator oscillator. The YAML `shape` field picks
 // which generator to use; some shapes (anharmonic) own additional phase
 // clocks beyond the fundamental.
@@ -110,38 +168,15 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 		}
 	}
 
-	switch shape {
-	case "sine":
-		w.gen = func() float64 { return sineGen(w.clock.Phase()) }
-	case "saw":
-		w.gen = func() float64 { return sawGen(w.clock.Phase()) }
-	case "square":
-		w.gen = func() float64 { return squareGen(w.clock.Phase()) }
-	case "ramp-up":
-		w.gen = func() float64 { return rampUpGen(w.clock.Phase()) }
-	case "ramp-down":
-		w.gen = func() float64 { return rampDownGen(w.clock.Phase()) }
-	case "harmonic":
-		params, err := parseWaveParams(spec)
-		if err != nil {
-			return err
-		}
-		w.gen = makeHarmonicGen(w, params)
-	case "anharmonic":
-		params, err := parseWaveParams(spec)
-		if err != nil {
-			return err
-		}
-		w.gen = makeAnharmonicGen(w, params)
-	case "noise":
-		w.gen = makeNoiseGen()
-	case "pink":
-		w.gen = makePinkGen()
-	case "pwm":
-		w.gen = makePWMGen(w, spec)
-	default:
+	factory, ok := waveGens[shape]
+	if !ok {
 		return fmt.Errorf("wave: shape %q not yet implemented", shape)
 	}
+	gen, err := factory(w, spec)
+	if err != nil {
+		return err
+	}
+	w.gen = gen
 
 	if lo, ok := numeric(spec["level-override"]); ok {
 		// Java treats level-override as raw int16 amplitude; map to our float scale.
@@ -386,45 +421,45 @@ func makePWMGen(w *Wave, spec component.Spec) func() float64 {
 	}
 }
 
-// makeNoiseGen mimics NoiseWaveGen: latches at two hold-lengths (1 and
-// 23 samples), averages, then low-passes via lastValue += diff/20. The
-// random seed is unspecified per run, matching Java's `new Random()`.
+// makeNoiseGen and makePinkGen mirror NoiseWaveGen and PinkNoiseGen,
+// which are identical except for how the output chases the latch mean:
+// the only difference is the `chase` rule passed to makeColoredNoise.
 func makeNoiseGen() func() float64 {
-	rng := rand.New(rand.NewSource(rand.Int63()))
-	holds := []int{1, 23}
-	latch := make([]float64, len(holds))
-	var last float64
-	var n int64
-	return func() float64 {
-		n++
-		for i, h := range holds {
-			if n%int64(h) == 0 {
-				latch[i] = rng.Float64()*2 - 1
-			}
-		}
-		var s float64
-		for _, v := range latch {
-			s += v
-		}
-		cur := s / float64(len(latch))
-		last += (cur - last) / 20
-		return last * 3
-	}
+	// Low-pass toward the mean by a fixed fraction.
+	return makeColoredNoise(func(last, cur float64) float64 {
+		return last + (cur-last)/20
+	})
 }
 
-// makePinkGen mimics PinkNoiseGen: same two-hold latch/average as the
-// noise gen, but the output chases the latch mean by a minimum step
-// rather than a fixed fraction. The step is max(|diff|, 3)*sign(diff) in
-// Java's int units (ampBase 1024), so the minimum step normalizes to
-// 3/1024; large diffs snap fully to the target. The enforced minimum
-// keeps the signal perpetually jittery - the characteristic pink "static".
 func makePinkGen() func() float64 {
+	// Chase the mean by a minimum step rather than a fraction. The step
+	// is max(|diff|, 3)*sign(diff) in Java's int units (ampBase 1024), so
+	// the minimum normalizes to 3/1024; large diffs snap fully to target.
+	// The enforced minimum keeps the signal perpetually jittery - the
+	// characteristic pink "static".
+	const minStep = 3.0 / 1024.0
+	return makeColoredNoise(func(last, cur float64) float64 {
+		switch diff := cur - last; {
+		case diff > 0:
+			return last + math.Max(diff, minStep)
+		case diff < 0:
+			return last - math.Max(-diff, minStep)
+		default:
+			return last
+		}
+	})
+}
+
+// makeColoredNoise is the shared noise machinery: latch fresh random
+// values at two hold-lengths (1 and 23 samples), average them, then
+// advance the output toward that mean by the given chase rule. The
+// random seed is unspecified per run, matching Java's `new Random()`.
+func makeColoredNoise(chase func(last, cur float64) float64) func() float64 {
 	rng := rand.New(rand.NewSource(rand.Int63()))
 	holds := []int{1, 23}
 	latch := make([]float64, len(holds))
 	var last float64
 	var n int64
-	const minStep = 3.0 / 1024.0
 	return func() float64 {
 		n++
 		for i, h := range holds {
@@ -436,13 +471,7 @@ func makePinkGen() func() float64 {
 		for _, v := range latch {
 			s += v
 		}
-		cur := s / float64(len(latch))
-		diff := cur - last
-		if diff > 0 {
-			last += math.Max(diff, minStep)
-		} else if diff < 0 {
-			last -= math.Max(-diff, minStep)
-		}
+		last = chase(last, s/float64(len(latch)))
 		return last * 3
 	}
 }
