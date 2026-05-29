@@ -27,6 +27,13 @@ type Env struct {
 	out    *synth.Wire
 	inputs []*synth.Wire
 
+	// Sidechain output: emits curLevel scaled to [outLevelMin, outLevelMax].
+	// Used by patches like brass.yaml: `out-level: lpf.freq, out-level-amp: 1000`.
+	levelOut          *synth.Wire
+	outLevelMin       float64
+	outLevelMax       float64
+	lastAdvanceSample int64
+
 	steps                                []*step
 	curStep                              int
 	reTrigger, hold, release, altRelease int
@@ -49,7 +56,15 @@ func (e *Env) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 	e.firstNote = true
 	e.preRelease = true
 	e.levelScale = 1
+	e.lastAdvanceSample = -1
 	e.reTrigger, e.hold, e.release, e.altRelease = -1, -1, -1, -1
+
+	if _, ok := spec["out-level"].(string); ok {
+		if v, ok := numeric(spec["out-level-amp"]); ok {
+			e.outLevelMin, e.outLevelMax = 0, v
+		}
+		e.levelOut = v.NewWire(e.computeLevel)
+	}
 
 	if b, ok := spec["exit"].(bool); ok && b {
 		e.exit = true
@@ -116,14 +131,9 @@ func (e *Env) setCurStep(idx int) {
 }
 
 func (e *Env) compute() float64 {
+	e.advanceOnce()
 	if e.ended {
 		return 0
-	}
-	s := e.steps[e.curStep]
-	level, done := s.nextVal(e.curLevel, e.voice.Synth().Instant().Sample())
-	e.curLevel = level
-	if done {
-		e.advance()
 	}
 	var sum float64
 	for _, w := range e.inputs {
@@ -131,6 +141,33 @@ func (e *Env) compute() float64 {
 	}
 	return sum * (e.curLevel / 100.0) * e.levelScale
 }
+
+// advanceOnce ticks the envelope state at most once per sample, so a
+// patch wired to both the main and out-level outputs (or only one of
+// them) still advances exactly one step per audio frame.
+func (e *Env) advanceOnce() {
+	cur := e.voice.Synth().Instant().Sample()
+	if cur == e.lastAdvanceSample || e.ended {
+		return
+	}
+	e.lastAdvanceSample = cur
+	s := e.steps[e.curStep]
+	level, done := s.nextVal(e.curLevel, cur)
+	e.curLevel = level
+	if done {
+		e.advance()
+	}
+}
+
+// computeLevel drives the sidechain output declared via out-level:.
+// Java's Envelope returns `min + (max-min) * curLevel/100`.
+func (e *Env) computeLevel() float64 {
+	e.advanceOnce()
+	return (e.outLevelMin + (e.outLevelMax-e.outLevelMin)*e.curLevel/100) / 32767.0
+}
+
+// LevelOut returns the sidechain wire (nil if `out-level:` was not set).
+func (e *Env) LevelOut() *synth.Wire { return e.levelOut }
 
 func (e *Env) advance() {
 	// Holds wait for note-off (or sustain release).

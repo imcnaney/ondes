@@ -17,8 +17,10 @@ import (
 	"ondes/synth"
 
 	// Register components.
+	_ "ondes/component/controller"
 	_ "ondes/component/env"
 	_ "ondes/component/filter"
+	_ "ondes/component/midinote"
 	_ "ondes/component/opamp"
 	_ "ondes/component/wave"
 )

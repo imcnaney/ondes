@@ -134,24 +134,82 @@ func (p *Patch) Apply(v *synth.Voice) error {
 	}
 	for _, name := range p.order {
 		c := insts[name]
-		raw, ok := p.specs[name]["out"]
-		if !ok {
-			continue
+		spec := p.specs[name]
+		if raw, ok := spec["out"]; ok {
+			dest, ok := raw.(string)
+			if !ok {
+				return fmt.Errorf("patch %s: component %q: out must be a string", p.name, name)
+			}
+			if err := wireOut(p.name, name, dest, c.Output(), insts, v); err != nil {
+				return err
+			}
 		}
-		dest, ok := raw.(string)
-		if !ok {
-			return fmt.Errorf("patch %s: component %q: out must be a string", p.name, name)
+		// Sidechain outputs: nested-map (linear-out / log-out on
+		// midi-note) and flat-string (out-level on env). Wire each
+		// according to the component's exposed named output.
+		for _, key := range []string{"linear-out", "log-out"} {
+			dest, ok := nestedOut(spec, key)
+			if !ok {
+				continue
+			}
+			if w := namedOutput(c, key); w != nil {
+				if err := wireOut(p.name, name, dest, w, insts, v); err != nil {
+					return err
+				}
+			}
 		}
-		if err := wireOut(p.name, name, dest, c, insts, v); err != nil {
-			return err
+		if dest, ok := spec["out-level"].(string); ok {
+			if w := namedOutput(c, "out-level"); w != nil {
+				if err := wireOut(p.name, name, dest, w, insts, v); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
 }
 
-func wireOut(patchName, srcName, dest string, src component.Component, insts map[string]component.Component, v *synth.Voice) error {
+// nestedOut is the `linear-out: { amp:..., out: "lpf.freq" }` pattern:
+// returns the target named in the block's `out:` field.
+func nestedOut(spec component.Spec, key string) (string, bool) {
+	m, ok := spec[key].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	dest, ok := m["out"].(string)
+	return dest, ok
+}
+
+// namedOutput returns a sidechain wire from a component, if it exposes one
+// under the given pin name. Components opt in by implementing methods of
+// the same name as the spec key (LinearOut / LogOut / LevelOut).
+func namedOutput(c component.Component, key string) *synth.Wire {
+	type linearOuter interface{ LinearOut() *synth.Wire }
+	type logOuter interface{ LogOut() *synth.Wire }
+	type levelOuter interface{ LevelOut() *synth.Wire }
+	switch key {
+	case "linear-out":
+		if x, ok := c.(linearOuter); ok {
+			return x.LinearOut()
+		}
+	case "log-out":
+		if x, ok := c.(logOuter); ok {
+			return x.LogOut()
+		}
+	case "out-level":
+		if x, ok := c.(levelOuter); ok {
+			return x.LevelOut()
+		}
+	}
+	return nil
+}
+
+func wireOut(patchName, srcName, dest string, src *synth.Wire, insts map[string]component.Component, v *synth.Voice) error {
+	if src == nil {
+		return nil
+	}
 	if dest == "main" {
-		v.AddVoiceMixInput(src.Output())
+		v.AddVoiceMixInput(src)
 		return nil
 	}
 	target, sel := dest, "main"
@@ -166,6 +224,6 @@ func wireOut(patchName, srcName, dest string, src component.Component, insts map
 	if !ok {
 		return fmt.Errorf("patch %s: component %q out: target %q does not accept inputs", patchName, srcName, target)
 	}
-	in.AddInput(sel, src.Output())
+	in.AddInput(sel, src)
 	return nil
 }

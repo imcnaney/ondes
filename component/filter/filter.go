@@ -10,6 +10,7 @@ package filter
 
 import (
 	"fmt"
+	"math"
 
 	"ondes/component"
 	"ondes/synth"
@@ -27,40 +28,92 @@ type Filter struct {
 	x, y       []float64
 	x0, y0     int
 	levelScale float64
+	sampleRate float64
+
+	// biquad-only state
+	bqFreq, bqQ             float64
+	bqFreqOffset, bqQOffset float64
+	bqFreqAmp, bqFreqRange  float64
+	bqQAmp, bqQRange        float64
+	modFreq, modQ           bool
+	freqInputs, qInputs     []*synth.Wire
 }
 
 func (f *Filter) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 	f.voice = v
 	f.levelScale = 1
+	f.sampleRate = float64(v.Synth().SampleRate())
 
 	shape, _ := spec["shape"].(string)
-	if shape != "iir" {
-		return fmt.Errorf("filter: shape %q not supported (only iir)", shape)
+	switch shape {
+	case "iir":
+		key, _ := spec["key"].(string)
+		if key == "" {
+			return fmt.Errorf("filter: key required for iir")
+		}
+		coef, ok := iirSpec(key)
+		if !ok {
+			return fmt.Errorf("filter: unknown iir key %q", key)
+		}
+		f.a = coef.a
+		f.b = coef.b
+		f.x = make([]float64, len(f.a))
+		f.y = make([]float64, len(f.b))
+		f.out = v.NewWire(f.compute)
+	case "biquad":
+		f.a = make([]float64, 3)
+		f.b = make([]float64, 3)
+		f.x = make([]float64, 3)
+		f.y = make([]float64, 3)
+		if fr, ok := numeric(spec["freq"]); ok {
+			f.bqFreq = fr
+		}
+		if q, ok := numeric(spec["Q"]); ok {
+			f.bqQ = q
+		}
+		if mp, ok := spec["input-freq"].(map[string]any); ok {
+			if amp, ok := numeric(mp["amp"]); ok {
+				if rg, ok := numeric(mp["range"]); ok {
+					f.bqFreqAmp = amp
+					f.bqFreqRange = rg
+					f.modFreq = true
+				}
+			}
+		}
+		if mp, ok := spec["input-Q"].(map[string]any); ok {
+			if amp, ok := numeric(mp["amp"]); ok {
+				if rg, ok := numeric(mp["range"]); ok {
+					f.bqQAmp = amp
+					f.bqQRange = rg
+					f.modQ = true
+				}
+			}
+		}
+		f.bqSetCoefficients(f.bqFreq, f.bqQ)
+		f.out = v.NewWire(f.computeBiquad)
+	default:
+		return fmt.Errorf("filter: shape %q not supported", shape)
 	}
-	key, _ := spec["key"].(string)
-	if key == "" {
-		return fmt.Errorf("filter: key required for iir")
-	}
-	coef, ok := iirSpec(key)
-	if !ok {
-		return fmt.Errorf("filter: unknown iir key %q", key)
-	}
-	f.a = coef.a
-	f.b = coef.b
-	f.x = make([]float64, len(f.a))
-	f.y = make([]float64, len(f.b))
 
 	if ls, ok := numeric(spec["level-scale"]); ok {
 		f.levelScale = ls
 	}
 
-	f.out = v.NewWire(f.compute)
 	return nil
 }
 
 func (f *Filter) Output() *synth.Wire { return f.out }
 
-func (f *Filter) AddInput(_ string, w *synth.Wire) { f.inputs = append(f.inputs, w) }
+func (f *Filter) AddInput(sel string, w *synth.Wire) {
+	switch sel {
+	case "freq":
+		f.freqInputs = append(f.freqInputs, w)
+	case "Q":
+		f.qInputs = append(f.qInputs, w)
+	default:
+		f.inputs = append(f.inputs, w)
+	}
+}
 
 func (f *Filter) compute() float64 {
 	var x float64
@@ -80,6 +133,85 @@ func (f *Filter) compute() float64 {
 	f.y[f.y0] = sigma
 	f.y0 = (f.y0 + 1) % len(f.y)
 	return sigma * f.levelScale
+}
+
+// bqSetCoefficients - RBJ-style lowpass with Java's custom alpha
+// (sin(omega) * sinh(0.5/Q) rather than the canonical
+// sinh(ln(2)/2 * BW * omega/sin(omega))).
+func (f *Filter) bqSetCoefficients(freq, q float64) {
+	if q <= 0 {
+		q = 0.5
+	}
+	omega := 2 * math.Pi * (freq / f.sampleRate)
+	alpha := math.Sin(omega) * math.Sinh(0.5/q)
+
+	f.a[0] = 1.0 + alpha
+	f.a[1] = -2.0 * math.Cos(omega)
+	f.a[2] = 1.0 - alpha
+
+	f.b[1] = 1 - math.Cos(omega)
+	f.b[0] = 0.5 * f.b[1]
+	f.b[2] = f.b[0]
+
+	if f.a[0] <= 0 || f.a[2] >= 1.0 || (1+f.a[2]) <= math.Abs(f.a[1]) {
+		for i := range f.a {
+			f.a[i] = 1
+			f.b[i] = 1
+		}
+		return
+	}
+	a0r := 1.0 / f.a[0]
+	f.a[0] = 1
+	f.a[1] *= a0r
+	f.a[2] *= a0r
+	for i := range f.b {
+		f.b[i] *= a0r
+	}
+}
+
+func (f *Filter) computeBiquad() float64 {
+	dirty := false
+	if f.modFreq {
+		var s float64
+		for _, w := range f.freqInputs {
+			s += w.Get()
+		}
+		// Java: range * inp / amp, in int units. Our float inp is
+		// scaled by 1/32767, so multiply back.
+		newOff := f.bqFreqRange * s * 32767.0 / f.bqFreqAmp
+		if newOff != f.bqFreqOffset {
+			f.bqFreqOffset = newOff
+			dirty = true
+		}
+	}
+	if f.modQ {
+		var s float64
+		for _, w := range f.qInputs {
+			s += w.Get()
+		}
+		newOff := f.bqQRange * s * 32767.0 / f.bqQAmp
+		if newOff != f.bqQOffset {
+			f.bqQOffset = newOff
+			dirty = true
+		}
+	}
+	if dirty {
+		f.bqSetCoefficients(f.bqFreq+f.bqFreqOffset, f.bqQ+f.bqQOffset)
+	}
+
+	var x float64
+	for _, w := range f.inputs {
+		x += w.Get()
+	}
+	// Direct form 1, sliding via index 0/1/2 (matches Java's array layout).
+	f.x[0] = x
+	y0 := f.b[0]*f.x[0] + f.b[1]*f.x[1] + f.b[2]*f.x[2] - f.a[1]*f.y[1] - f.a[2]*f.y[2]
+	f.x[2] = f.x[1]
+	f.x[1] = f.x[0]
+	f.y[2] = f.y[1]
+	f.y[1] = y0
+	f.y[0] = y0
+	return y0 * f.levelScale
 }
 
 func numeric(v any) (float64, bool) {
