@@ -5,6 +5,20 @@ original Java. The Go module is rooted at the repo top level (`module
 ondes` in `go.mod`); the Java tree under `src/main/java` is unchanged and
 remains the reference implementation.
 
+## Why this port exists
+
+The primary goal of the port is **to eliminate the GC-induced audio
+dropouts the Java version suffered during live performance.** On the JVM,
+allocating a voice graph on note-on could trigger a stop-the-world
+collection — tens to hundreds of milliseconds with every thread halted —
+which on the real-time audio thread means a missed buffer and an audible
+click. Render parity with Java (below) is a correctness *guard*, but
+clean live playback is the *point*.
+
+This is why the live path matters as much as the render path, and why the
+voice-pool question (see *Known gaps*) is treated as a real engineering
+decision rather than optional polish.
+
 ## What the Go port covers
 
 | Capability | Java | Go | Notes |
@@ -96,14 +110,54 @@ envelope, zero-frame %), not sample-for-sample.
 
 ## Known gaps / deferred
 
-- **Voice pool.** Java pre-creates a per-channel voice pool to avoid GC
-  pauses. The Go port allocates a voice graph per note instead. A
-  graph-recycling pool was deliberately deferred: it needs an exact
-  per-component `Reset()` (env/echo/filter/smooth/wave) that risks the
-  verified render parity for a GC-only benefit, now that the concrete live
-  resource bug (the phase-clock leak above) is fixed. If profiling later
-  shows GC pauses under sustained live play, the safe approach is a
-  `Resettable` interface with fresh-allocation fallback.
+- **Voice pool — deferred pending measurement.** Java pre-creates a
+  per-channel voice pool so no allocation happens on the audio thread. The
+  Go port allocates a fresh voice graph per note (`newVoice` in
+  `synth/voice.go`) instead. A graph-recycling pool was deferred — but the
+  reasoning is *not* "the GC benefit is trivial," because avoiding live GC
+  dropouts is this port's whole purpose (see *Why this port exists*). The
+  actual reasoning:
+
+  1. **Go's collector likely already solves the Java problem.** Go's GC is
+     concurrent with sub-millisecond stop-the-world pauses by construction,
+     so the per-note allocation pattern that caused multi-millisecond STW
+     stalls on the JVM may never miss a buffer deadline in Go. If so, the
+     port already meets its goal and a pool is unnecessary complexity.
+     **This is unverified and should be measured before any pool is built**
+     (see below).
+  2. **A pool's cost is a real parity risk.** Recycling a voice graph
+     requires an exact per-component `Reset()` (env carries ~10 state
+     fields plus segment timing; echo a delay buffer; filters their
+     history; wave its phase). Any missed field silently carries stale
+     time-domain state — residual oscillator phase, an envelope timer
+     measured against the never-resetting `Instant.sample` counter, an
+     uncleared delay/filter tail — into the next note, shifting the signal
+     in time and breaking parity with no error. Crucially, the regression
+     suite calls `synth.New` fresh per fixture, so a buggy pool could pass
+     49/49 and only corrupt audio under sustained live play.
+
+  **Decision sequence if dropouts are ever observed in `cmd/o`:**
+
+  1. *Measure first.* Run `cmd/o` under realistic heavy play (fast
+     arpeggios, chord stacks) at the buffer size actually used, with
+     `GODEBUG=gctrace=1`, and count audio-callback underruns. Small buffers
+     (`-buffer-size 256` ≈ 5.8 ms/block) are where any residual GC assist
+     would show; the 1024 default has ~23 ms of slack. Zero underruns =
+     the port already meets its goal and no pool is needed.
+  2. *If it still drops out, make the pool parity-safe before building it.*
+     Extend the regression harness with a mode that renders multiple
+     fixtures/notes through **one reused engine** to force slot recycling,
+     diffing against fresh-allocation output. Bit-identical across all 49
+     fixtures proves the reset is correct against the trusted baseline and
+     turns a silent reset bug into a deterministic CI failure.
+  3. *Bound the blast radius.* Implement recycling behind a `Resettable`
+     interface with fresh-allocation fallback: reuse a voice slot only when
+     every component in its graph implements `Reset`, otherwise allocate
+     fresh.
+
+  Note that some of the Java dropouts may also have been the JavaSound MME
+  audio path rather than GC; `cmd/o`'s malgo/CoreAudio path sidesteps that
+  independently.
 - **Wave editor GUI** is not ported.
 - **SMPTE-timed** MIDI files are rejected (`midi.ReadFile`); only metric
   (ticks-per-quarter) timing is supported.

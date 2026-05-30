@@ -156,16 +156,23 @@ step is checked against 49/49.
       per voice, and released via `Instant.RemoveClock` when the voice is removed.
       Covered by `TestPhaseClocksReleasedWithVoice`. This was the concrete resource
       problem Java's voice pool exists to avoid.
-- [~] **Voice pool — DEFERRED (deliberate).** A graph-recycling pool that reuses
-      voice component graphs to cut GC churn requires an exact per-component
-      `Reset()` across env/echo/filter/smooth/wave (env alone carries ~10 state
-      fields plus per-step timing). Any imperfect reset silently corrupts audio
-      and would break the verified 49/49 parity, for a GC-only benefit now that
-      the real live resource bug (the clock leak above) is fixed. Go handles
-      per-note allocation comfortably at human note-rates. Revisit only if
-      profiling shows GC pauses under sustained live play; the safe path is a
-      `Resettable` interface with fresh-allocation fallback (recycle a voice only
-      when every component supports `Reset`).
+- [~] **Voice pool — DEFERRED pending measurement.** Avoiding live GC dropouts is
+      this port's whole purpose (the Java author saw them in performance), so the
+      deferral is **not** "the GC benefit is trivial." It is: (1) Go's concurrent
+      sub-millisecond-pause collector likely already eliminates the multi-ms
+      stop-the-world stalls that glitched the JVM, so per-note allocation may
+      never miss a buffer deadline here — **unverified, must be measured first**;
+      and (2) a graph-recycling pool needs an exact per-component `Reset()` across
+      env/echo/filter/smooth/wave (env alone ~10 state fields plus per-step
+      timing) where any imperfect reset silently breaks the verified 49/49 parity
+      — and the suite's fresh `synth.New` per fixture would *not* catch it, since
+      the corruption only shows under slot reuse in sustained live play. Decision
+      sequence if dropouts ever appear in `cmd/o`: measure first
+      (`GODEBUG=gctrace=1` + underrun count at the real buffer size); if it still
+      drops out, add a reuse-forcing regression mode (one engine across many
+      notes, diffed vs fresh-allocation) to make reset bugs deterministic before
+      building; then implement behind a `Resettable` interface with
+      fresh-allocation fallback. Full detail in `doc/GoPort.md`.
 - [x] Verify: `go test ./...` green (regression stays 49/49, new synth unit
       tests pass). Multi-channel live spot-check via `cmd/o` with per-channel
       `-patch` assignments remains a manual step (needs a MIDI controller).
