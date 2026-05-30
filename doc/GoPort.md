@@ -57,6 +57,48 @@ go run ./cmd/midiMon -in <port-substr>
 (first match wins), same as the Java tools. Use `-list` /
 `cmd/audioInfo` / `cmd/midiInfo` to discover the substrings.
 
+## Platforms & building on Windows
+
+The build splits into a CGo-free half and a CGo half:
+
+- **`cmd/p` (MIDI → WAV render) is pure Go.** The `audiodev`/`mididev`
+  packages keep malgo and rtmidi out of the offline path, so `cmd/p`
+  builds and runs on any Go-supported OS — **including Windows — with no C
+  compiler:**
+
+  ```
+  go build ./cmd/p
+  go run  ./cmd/p -patch <name> in.mid out.wav
+  ```
+
+- **The live tools (`cmd/o`, `cmd/audioInfo`, `cmd/midiInfo`,
+  `cmd/midiMon`) require CGo and a C/C++ toolchain.** They link two native
+  dependencies:
+  - `github.com/gen2brain/malgo` — miniaudio (C), audio output
+  - `gitlab.com/gomidi/midi/v2/drivers/rtmididrv` — RtMidi (C++), MIDI in
+
+  On macOS (the tested platform) the system clang toolchain covers both;
+  malgo uses CoreAudio. On **Windows**, both libraries support the OS but
+  you must build with CGo enabled and a MinGW-w64 `gcc`/`g++` on `PATH`
+  (e.g. from [MSYS2](https://www.msys2.org/) or TDM-GCC):
+
+  ```
+  set CGO_ENABLED=1                      REM cmd.exe
+  $env:CGO_ENABLED = "1"                 # PowerShell
+  go build ./cmd/o ./cmd/audioInfo ./cmd/midiInfo ./cmd/midiMon
+  ```
+
+  > **Untested on Windows.** The live path has only been exercised on
+  > macOS/CoreAudio. The steps above are the expected requirements, not a
+  > verified build — treat them as a starting point.
+
+  On Windows, miniaudio can drive the modern **WASAPI** backend, unlike the
+  Java version, whose JavaSound output is stuck on the older MME API (the
+  README blames MME for inefficiency and dropouts). A Windows Go build can
+  therefore sidestep *both* the MME path and the GC dropouts that motivated
+  this port (see *Why this port exists*) — worth confirming if the live
+  target is Windows.
+
 ## Render parity & the regression harness
 
 The committed reference summaries in `regression/fixtures/summary/` were
