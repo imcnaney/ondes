@@ -150,7 +150,7 @@ func (w *Wave) Configure(spec component.Spec, v *synth.Voice, _ string) error {
 		w.unsigned = true
 	}
 
-	w.clock = v.Synth().Instant().AddPhaseClock()
+	w.clock = v.AddPhaseClock()
 	if f, ok := numeric(spec["freq"]); ok {
 		w.fixedFreq = true
 		w.baseFreq = f * w.freqMul
@@ -371,7 +371,7 @@ func makeAnharmonicGen(w *Wave, params []float64) func() float64 {
 		}
 	}
 	for i := 0; i+1 < len(anharm); i += 2 {
-		c := w.voice.Synth().Instant().AddPhaseClock()
+		c := w.voice.AddPhaseClock()
 		c.SetFrequency(w.clock.Frequency() * anharm[i])
 		w.extra = append(w.extra, c)
 		w.mults = append(w.mults, anharm[i])

@@ -12,12 +12,14 @@ import (
 	"ondes/synth"
 )
 
-// These tests drive the real render path (patch.Load -> synth -> CC
-// dispatch) used by cmd/p, which is also what the regression WAV harness
-// exercises. They guard the smooth/balancer port against the two failure
+// These are fast smoke tests over the real render path (patch.Load ->
+// synth -> CC dispatch) used by cmd/p. They guard against the two failure
 // modes the port has hit before: an unregistered component renders pure
-// silence, and a botched int/float scale conversion renders garbage or a
-// near-silent signal because the CC modulation never reaches it.
+// silence, and a botched int/float scale conversion renders a near-silent
+// signal because the CC modulation never reaches it. Full sample-accurate
+// parity against the Java reference summaries lives in the
+// `go test ./regression` suite (regression/regression_test.go); these
+// just catch gross breakage quickly without shelling out to python.
 
 func TestMain(m *testing.M) {
 	// patch.Load resolves ./program relative to CWD; tests run from the

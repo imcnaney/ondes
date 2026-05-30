@@ -31,6 +31,7 @@ type Voice struct {
 	synth      *Synth
 	components map[string]any
 	wires      []*Wire
+	clocks     []*PhaseClock // phase clocks this voice owns, released on teardown
 	voiceMix   *Junction
 	waitForEnv bool // if true, note-off does not immediately remove the voice
 
@@ -65,6 +66,26 @@ func (v *Voice) NewWire(compute func() float64) *Wire {
 	w := NewWire(compute)
 	v.wires = append(v.wires, w)
 	return w
+}
+
+// AddPhaseClock creates a phase clock owned by this voice. Components must
+// allocate their oscillator clocks through here (rather than reaching for
+// the Instant directly) so that ReleaseClocks can unregister them when the
+// voice is torn down, keeping the Instant's tick list bounded to live
+// voices.
+func (v *Voice) AddPhaseClock() *PhaseClock {
+	pc := v.synth.instant.AddPhaseClock()
+	v.clocks = append(v.clocks, pc)
+	return pc
+}
+
+// ReleaseClocks unregisters this voice's phase clocks from the Instant.
+// Called by the synth when the voice is removed.
+func (v *Voice) ReleaseClocks() {
+	for _, pc := range v.clocks {
+		v.synth.instant.RemoveClock(pc)
+	}
+	v.clocks = nil
 }
 
 // AddVoiceMixInput plugs a wire into this voice's main summing junction;

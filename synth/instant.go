@@ -34,6 +34,10 @@ func NewInstant(sr int) *Instant { return &Instant{sr: sr} }
 
 func (i *Instant) SampleRate() int { return i.sr }
 func (i *Instant) Sample() int64   { return i.sample }
+
+// ActiveClocks reports how many phase clocks are currently registered.
+// Exposed mainly so tests can assert that clocks don't leak across notes.
+func (i *Instant) ActiveClocks() int { return len(i.clocks) }
 func (i *Instant) Seconds() float64 {
 	return float64(i.sample) / float64(i.sr)
 }
@@ -42,6 +46,24 @@ func (i *Instant) AddPhaseClock() *PhaseClock {
 	pc := &PhaseClock{sr: i.sr}
 	i.clocks = append(i.clocks, pc)
 	return pc
+}
+
+// RemoveClock unregisters a phase clock so Next no longer ticks it. This
+// is how a finished voice stops leaking clocks onto the Instant: without
+// it, every note ever played would keep ticking for the life of the synth
+// (harmless for short offline renders, an unbounded leak for live play).
+// Order is irrelevant - the clocks are independent - so a swap-remove is
+// fine.
+func (i *Instant) RemoveClock(pc *PhaseClock) {
+	for j, c := range i.clocks {
+		if c == pc {
+			last := len(i.clocks) - 1
+			i.clocks[j] = i.clocks[last]
+			i.clocks[last] = nil
+			i.clocks = i.clocks[:last]
+			return
+		}
+	}
 }
 
 func (i *Instant) Next() {
