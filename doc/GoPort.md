@@ -138,6 +138,30 @@ envelope, zero-frame %), not sample-for-sample.
   would grow for every note ever played — invisible in short offline
   renders, a steady audio-thread slowdown for a live session.
 
+- **Component context flattened to per-voice.** Java tagged each
+  component VOICE / CHANNEL / GLOBAL and routed the signal
+  `voiceMix → channelMix → limiter`, so CHANNEL-context components (echo,
+  LFOs shared across notes, fixed-frequency filters) had **one instance
+  per MIDI channel** shared by every note on it. The Go port drops the
+  channel mix and the CHANNEL context: every voice is a self-contained
+  per-`(channel, note)` graph that sums straight into the limiter
+  (`Synth.Step`). Channel-wide state is preserved two ways — patch
+  assignment is per channel (`SetChannelPatch`), and the live controller
+  value is replayed into each new voice on note-on (`Synth.ccState`), so a
+  voice created mid-sweep starts at the current CC rather than zero.
+
+  The audible consequence is that anything Java shared *across overlapping
+  notes* is now **per-note** instead. `echo` is the concrete case: each
+  voice owns its own delay tape (`echo.go`, allocated in `Configure`), so
+  two overlapping notes ring out two independent echo tails rather than
+  feeding one shared tape. (This is why a draining voice is kept in the
+  mix until *its own* output decays — see `Voice.draining` /
+  `endingZeros`.) For most patches this is inaudible or preferable; for a
+  patch that relied on a single shared echo/LFO bus per channel it is a
+  real behavioral divergence. No suite fixture depends on the shared-bus
+  behavior, so parity holds; flagged here so a future shared-effects patch
+  isn't a surprise.
+
 - **Live threading (`cmd/o`).** The engine is single-threaded and owned
   exclusively by the audio callback. The MIDI callback runs on a different
   thread and never touches the engine directly: it pushes note/CC commands
