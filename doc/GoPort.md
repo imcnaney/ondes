@@ -171,26 +171,34 @@ envelope, zero-frame %), not sample-for-sample.
   samples. No lock sits on the per-sample path. This mirrors Java's
   `MidiListenerThread` queue, drained on the audio thread. `patch.Apply`
   (voice construction) therefore runs on the audio thread during the
-  drain; it is comfortably sub-buffer for normal patches at human
-  note-rates.
+  drain; measured at ~0.8–25 µs/note (see *Voice pool* under *Known
+  gaps*), that is well under a single buffer even for dense chords.
 
 ## Known gaps / deferred
 
-- **Voice pool — deferred pending measurement.** Java pre-creates a
-  per-channel voice pool so no allocation happens on the audio thread. The
-  Go port allocates a fresh voice graph per note (`newVoice` in
-  `synth/voice.go`) instead. A graph-recycling pool was deferred — but the
-  reasoning is *not* "the GC benefit is trivial," because avoiding live GC
-  dropouts is this port's whole purpose (see *Why this port exists*). The
-  actual reasoning:
+- **Voice pool — deferred, and now measured.** Java pre-creates a
+  per-channel voice pool. Its primary purpose is **to pre-pay graph
+  *configuration*** — instantiating and wiring the components of a fully
+  modular patch — so that work doesn't happen on the audio thread at
+  note-on. (Avoiding allocation/GC is a secondary benefit, not the point;
+  the voices are small and never expire.) The Go port instead builds a
+  fresh voice graph per note (`newVoice` + `patch.Apply`, run on the audio
+  thread during the MIDI drain). A pool was deferred for two reasons:
 
-  1. **Go's collector likely already solves the Java problem.** Go's GC is
-     concurrent with sub-millisecond stop-the-world pauses by construction,
-     so the per-note allocation pattern that caused multi-millisecond STW
-     stalls on the JVM may never miss a buffer deadline in Go. If so, the
-     port already meets its goal and a pool is unnecessary complexity.
-     **This is unverified and should be measured before any pool is built**
-     (see below).
+  1. **The configuration cost is measured, and it is negligible in Go.**
+     `BenchmarkNoteOnSetup` (`regression/setup_bench_test.go`) times a
+     cold `NoteOn` — `newVoice` plus the full `patch.Apply` — per patch.
+     On the dev machine the spread is **~0.8 µs (sine) to ~25 µs (ocean2,
+     the heaviest fixture)** per note, churning 1.4–19 KB. Against the
+     audio deadline that is **0.4% of a 256-sample buffer (5.8 ms) and
+     0.1% of the 1024 default (23 ms)** even for the heaviest patch; a
+     10-note chord landing in one buffer is still ~4% / ~1%. So the
+     per-note setup the pool exists to amortize costs two-to-three orders
+     of magnitude less than a single buffer. It would take a patch ~200×
+     heavier than any in the suite, or a very large simultaneous chord,
+     before setup threatened even the smallest buffer. Re-run with
+     `go test ./regression -run=^$ -bench=NoteOnSetup -benchmem` after any
+     change that touches `Configure` or the wire graph.
   2. **A pool's cost is a real parity risk.** Recycling a voice graph
      requires an exact per-component `Reset()` (env carries ~10 state
      fields plus segment timing; echo a delay buffer; filters their
