@@ -8,6 +8,8 @@ To hear some of what you can do so far:
 [OndeSynth demo on YouTube](https://www.youtube.com/playlist?list=PLk0M1i4FJYGJ04WGUqPTOEU0NjMNrJEqt)
 
 There is extensive documentation starting at [Voice.md](doc/Voice.md) and there are a number of example patches included.
+
+Per-note voice-setup timings for the Go port are in [timings.MD](doc/timings.MD).
  
 ![](doc/images/ondes-synth-architecture-diagram.png)
 For more diagrams, see [Diagrams.md](doc/Diagrams.md)
