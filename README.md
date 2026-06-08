@@ -9,7 +9,7 @@ To hear some of what you can do so far:
 
 There is extensive documentation starting at [Voice.md](doc/Voice.md) and there are a number of example patches included.
 
-Per-note voice-setup timings for the Go port are in [timings.MD](doc/timings.MD).
+Per-note voice-setup timings for the Go port are in [timings.md](doc/timings.md).
  
 ![](doc/images/ondes-synth-architecture-diagram.png)
 For more diagrams, see [Diagrams.md](doc/Diagrams.md)
