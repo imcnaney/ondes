@@ -50,6 +50,13 @@ Voice *voice_new(Synth *s, uint8_t ch, uint8_t note, uint8_t vel) {
 
 void voice_free(Voice *v) {
     if (!v) return;
+    // Defensively release any phase clocks still registered on the shared
+    // Instant before dropping the voice's arena. Normal teardown
+    // (remove_voice) already releases them - this is idempotent - but it
+    // also covers the patch-apply-failure path, where a partially built
+    // voice may have allocated oscillator clocks before a later component
+    // failed. Without this they would leak and keep ticking.
+    voice_release_clocks(v);
     arena_free(&v->arena);
     free(v);
 }
