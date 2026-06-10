@@ -134,7 +134,7 @@ static void msleep(long ms) {
 int main(int argc, char **argv) {
     const char *in_sub = NULL, *out_sub = NULL;
     int buffer = 1024, sample_rate = ONDES_SAMPLE_RATE;
-    int hold = 0, list = 0, selftest = 0;
+    int hold = 0, list = 0, selftest = 0, pool = 0;
     Assign assigns[MAX_PATCHES];
     int n_assign = 0;
 
@@ -154,6 +154,8 @@ int main(int argc, char **argv) {
             list = 1;
         else if (!strcmp(a, "-selftest"))
             selftest = 1;
+        else if (!strcmp(a, "-pool"))
+            pool = 1;
         else if (!strcmp(a, "-patch") && i + 1 < argc && n_assign < MAX_PATCHES) {
             const char *v = argv[++i];
             const char *colon = strchr(v, ':');
@@ -213,6 +215,7 @@ int main(int argc, char **argv) {
     Live L = {0};
     L.hold = hold;
     L.s = synth_new(sample_rate, def);
+    synth_set_pool_enabled(L.s, pool);
     for (int ch = 0; ch < 16; ch++)
         if (has_chan[ch]) synth_set_channel_patch(L.s, (uint8_t)ch, by_chan[ch]);
 

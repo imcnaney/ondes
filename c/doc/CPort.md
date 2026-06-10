@@ -51,6 +51,7 @@ cmake -S c -B c/build && cmake --build c/build
 # ./program and src/main/resources/program resolve):
 c/build/p -patch <name> in.mid out.wav
 c/build/p -patch sine regression/fixtures/mid/scale.mid /tmp/sine.wav
+c/build/p -pool -patch sine in.mid out.wav   # recycle voice graphs
 ```
 
 ### Live play (`o`, macOS)
@@ -62,6 +63,7 @@ c/build/o -in <substr> -out <substr> -buffer-size 256 -patch brass
 c/build/o -in <substr> -hold -patch sine     # suppress note-offs (drone)
 c/build/o -patch 2:brass -patch sine         # multi-timbral: ch-2 + default
 c/build/o -selftest -patch ocean2            # play a note, no MIDI in (diag)
+c/build/o -in <substr> -pool -patch brass    # recycle voice graphs
 ```
 
 `-patch` accepts the same name forms as the Java/Go loaders (exact
@@ -135,6 +137,36 @@ choices:
   renderer stays dependency-free and the live deps are linked only into
   `o`.
 
+- **Voice pool (opt-in, `-pool`).** Off by default — the proven path
+  builds and frees a voice graph per note. With `synth_set_pool_enabled`
+  (the `-pool` flag on `p`/`o`), a finished voice is reset and returned to
+  a per-patch idle pool instead of being freed, so note-on reuses a
+  pre-built graph rather than re-running `patch.Apply` on the audio thread
+  (the work the Java `ChannelVoicePool` exists to pre-pay).
+
+  The hard part of any pool is the **reset**: recycling a graph demands
+  that every component's time-domain state (envelope timers, filter and
+  echo history, oscillator phase, …) return exactly to its post-build
+  value, and a single missed field silently corrupts audio while still
+  passing a suite that allocates fresh per fixture. This port sidesteps
+  the per-field risk structurally: because all per-voice mutable state
+  lives in the voice arena, reset is an **`arena_snapshot` taken after
+  `Apply` and an `arena_restore` on reuse** — a byte-exact rewind of the
+  whole graph (pointers stay valid, the arena isn't moved), so no field
+  can be forgotten. The only per-voice state outside the arena is the
+  oscillator phase clocks (owned by the shared `Instant`); the one
+  component that owns them, `wave`, implements the optional `reset` vtable
+  slot to re-zero them. Pooled voices keep their clocks registered while
+  idle (bounded by pool size) and reset them on reacquire.
+
+  Recycling is held to a hard guard: `regression/check_c_pool.sh` renders
+  every fixture both pooled and fresh; the 46 deterministic fixtures must
+  be **byte-for-byte identical** (a reset bug shifts the signal and shows
+  as a diff), the 3 noise fixtures are summary-checked, and the pooled
+  renders must still pass 49/49 against the Java summaries. Measured reuse:
+  `sine`/scale recycles one voice across all 8 notes (8×) with bit-identical
+  output; overlapping notes (`brass`, `ocean2`) correctly grow the pool.
+
 - **Self-contained YAML.** `src/patch/yaml_spec.c` is a focused
   block-style YAML parser for the patch subset actually used by the corpus
   (block maps and sequences — including sequences aligned with their key —
@@ -151,6 +183,11 @@ choices:
 - **Memory:** ASan + UBSan renders of the heaviest/polyphonic fixtures
   (`ocean2`, `bell-organ` chord, `brass`, `repeater`) are clean; macOS
   `leaks` reports 0 leaks (LSan is unavailable on Apple clang).
+- **Voice pool:** `regression/check_c_pool.sh` → 46/46 deterministic
+  fixtures bit-identical pooled-vs-fresh, 3 noise fixtures summary-checked,
+  and pooled renders pass 49/49 vs Java. ASan/UBSan clean and 0 leaks with
+  `-pool`. A unit test asserts a graph is reused (pool size 1) across
+  repeated notes.
 - **Live path:** `o -selftest` drives a note through the exact live render
   path (ring → `render` → engine) and reports the output peak — `sine`
   matches the offline render (0.0195), `brass`/`ocean2` scale up as
@@ -164,9 +201,6 @@ choices:
   MIDI input uses CoreMIDI directly. A Linux/Windows build would add an
   ALSA/WinMM or RtMidi backend behind the existing `mididev.h` interface.
   Live play has been exercised on macOS/CoreAudio only.
-- **Voice pool** — deferred for the same measured reasons as the Go port
-  (per-note setup is negligible; a pool is a real parity risk). See
-  *Known gaps* in [GoPort.md](../../doc/GoPort.md).
 - **Wave editor GUI** — not ported.
 - **SMPTE-timed** MIDI files are rejected; only metric (ticks-per-quarter)
   timing is supported.

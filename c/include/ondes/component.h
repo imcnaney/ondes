@@ -25,6 +25,11 @@ typedef struct ComponentVTable {
     void (*add_input)(Component *self, const char *sel, Wire *src); // optional
     void (*on_midi)(Component *self, MidiMsg m);                    // optional
     Wire *(*named_output)(Component *self, const char *key);        // optional
+    // reset restores out-of-arena runtime state for voice recycling. Most
+    // components need none (their state lives in the voice arena and is
+    // restored by the arena snapshot); only wave implements it, to re-zero
+    // its phase clocks (which live on the shared Instant). optional.
+    void (*reset)(Component *self);
 } ComponentVTable;
 
 struct Component {
@@ -50,6 +55,9 @@ static inline void component_on_midi(Component *c, MidiMsg m) {
 }
 static inline Wire *component_named_output(Component *c, const char *key) {
     return c->vt->named_output ? c->vt->named_output(c, key) : NULL;
+}
+static inline void component_reset(Component *c) {
+    if (c->vt->reset) c->vt->reset(c);
 }
 
 // --- registry ---

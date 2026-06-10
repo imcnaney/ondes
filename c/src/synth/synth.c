@@ -15,6 +15,15 @@ typedef struct {
     uint8_t ch, note;
 } PendingEnd;
 
+// A Pool holds idle, pre-built voice graphs for one patch (keyed by the
+// patch's ctx pointer). Finished voices are reset and pushed here; note-on
+// pops one instead of re-running patch.Apply.
+typedef struct {
+    void *patch_ctx;
+    Voice **idle;
+    size_t n_idle, cap_idle;
+} Pool;
+
 struct Synth {
     int sr;
     Instant *instant;
@@ -33,6 +42,13 @@ struct Synth {
     size_t n_pending, cap_pending;
 
     bool apply_err_logged;
+
+    // Voice pooling (off by default).
+    bool pool_enabled;
+    Pool *pools;
+    size_t n_pools, cap_pools;
+    Voice **all_pooled; // every voice built into a pool, freed at teardown
+    size_t n_all, cap_all;
 };
 
 Synth *synth_new(int sr, SynthPatch default_patch) {
@@ -48,9 +64,16 @@ Synth *synth_new(int sr, SynthPatch default_patch) {
 
 void synth_free(Synth *s) {
     if (!s) return;
-    for (size_t i = 0; i < s->n_active; i++) {
-        voice_release_clocks(s->active[i]);
-        voice_free(s->active[i]);
+    if (s->pool_enabled) {
+        // Every pooled voice (idle or currently active) is tracked in
+        // all_pooled; free them there to avoid double-freeing the active
+        // ones. voice_free releases clocks and the snapshot.
+        for (size_t i = 0; i < s->n_all; i++) voice_free(s->all_pooled[i]);
+        for (size_t i = 0; i < s->n_pools; i++) free(s->pools[i].idle);
+        free(s->pools);
+        free(s->all_pooled);
+    } else {
+        for (size_t i = 0; i < s->n_active; i++) voice_free(s->active[i]);
     }
     free(s->active);
     free(s->pending);
@@ -62,6 +85,42 @@ void synth_free(Synth *s) {
 int synth_sample_rate(const Synth *s) { return s->sr; }
 Instant *synth_instant(Synth *s) { return s->instant; }
 int synth_active_voices(const Synth *s) { return (int)s->n_active; }
+
+void synth_set_pool_enabled(Synth *s, bool enabled) { s->pool_enabled = enabled; }
+int synth_pool_size(const Synth *s) { return (int)s->n_all; }
+
+static Pool *pool_for(Synth *s, void *ctx) {
+    for (size_t i = 0; i < s->n_pools; i++)
+        if (s->pools[i].patch_ctx == ctx) return &s->pools[i];
+    if (s->n_pools == s->cap_pools) {
+        size_t cap = s->cap_pools ? s->cap_pools * 2 : 8;
+        s->pools = realloc(s->pools, cap * sizeof(*s->pools));
+        s->cap_pools = cap;
+    }
+    Pool *p = &s->pools[s->n_pools++];
+    p->patch_ctx = ctx;
+    p->idle = NULL;
+    p->n_idle = p->cap_idle = 0;
+    return p;
+}
+
+static void pool_push_idle(Pool *p, Voice *v) {
+    if (p->n_idle == p->cap_idle) {
+        size_t cap = p->cap_idle ? p->cap_idle * 2 : 8;
+        p->idle = realloc(p->idle, cap * sizeof(*p->idle));
+        p->cap_idle = cap;
+    }
+    p->idle[p->n_idle++] = v;
+}
+
+static void all_pooled_add(Synth *s, Voice *v) {
+    if (s->n_all == s->cap_all) {
+        size_t cap = s->cap_all ? s->cap_all * 2 : 16;
+        s->all_pooled = realloc(s->all_pooled, cap * sizeof(*s->all_pooled));
+        s->cap_all = cap;
+    }
+    s->all_pooled[s->n_all++] = v;
+}
 
 void synth_set_channel_patch(Synth *s, uint8_t ch, SynthPatch p) {
     if (ch < 16) s->patches[ch] = p;
@@ -94,10 +153,46 @@ static void active_remove(Synth *s, Voice *v) {
 static void remove_voice(Synth *s, uint8_t ch, uint8_t note) {
     Voice *v = s->table[ch][note];
     if (!v) return;
-    voice_release_clocks(v); // stop the Instant ticking a dead voice's clocks
     active_remove(s, v);
     s->table[ch][note] = NULL;
-    voice_free(v);
+    if (s->pool_enabled && v->pool) {
+        // Return to the pool for reuse: keep the graph, the snapshot and
+        // the (still-registered) phase clocks; they are reset on reacquire.
+        pool_push_idle((Pool *)v->pool, v);
+    } else {
+        voice_release_clocks(v); // stop ticking a dead voice's clocks
+        voice_free(v);
+    }
+}
+
+// acquire_voice returns a voice ready for (ch,note): a reset pooled voice
+// when pooling is on and one is idle, otherwise a freshly built one. NULL
+// if the patch fails to apply.
+static Voice *acquire_voice(Synth *s, SynthPatch p, uint8_t ch, uint8_t note,
+                            uint8_t vel) {
+    if (s->pool_enabled) {
+        Pool *pool = pool_for(s, p.ctx);
+        if (pool->n_idle > 0) {
+            Voice *v = pool->idle[--pool->n_idle];
+            voice_reset_for_reuse(v, ch, note, vel);
+            return v;
+        }
+        Voice *v = voice_new(s, ch, note, vel);
+        if (p.apply(p.ctx, v) != 0) {
+            voice_free(v);
+            return NULL;
+        }
+        voice_build_snapshot(v); // clean post-Apply image for later reuse
+        v->pool = pool;
+        all_pooled_add(s, v);
+        return v;
+    }
+    Voice *v = voice_new(s, ch, note, vel);
+    if (p.apply(p.ctx, v) != 0) {
+        voice_free(v);
+        return NULL;
+    }
+    return v;
 }
 
 void synth_note_on(Synth *s, uint8_t ch, uint8_t note, uint8_t vel) {
@@ -116,15 +211,14 @@ void synth_note_on(Synth *s, uint8_t ch, uint8_t note, uint8_t vel) {
     }
     SynthPatch p = patch_for(s, ch);
     if (!p.ctx) return; // no patch assigned to this channel
-    Voice *v = voice_new(s, ch, note, vel);
-    if (p.apply(p.ctx, v) != 0) {
+    Voice *v = acquire_voice(s, p, ch, note, vel);
+    if (!v) {
         // Patch failed; drop this note. Log once - the same patch fails the
         // same way on every note.
         if (!s->apply_err_logged) {
             fprintf(stderr, "synth: dropping notes, patch failed to apply\n");
             s->apply_err_logged = true;
         }
-        voice_free(v);
         return;
     }
     s->table[ch][note] = v;

@@ -48,8 +48,27 @@ Voice *voice_new(Synth *s, uint8_t ch, uint8_t note, uint8_t vel) {
     return v;
 }
 
+void voice_build_snapshot(Voice *v) {
+    arena_snapshot_free(v->snapshot);
+    v->snapshot = arena_snapshot(&v->arena);
+}
+
+void voice_reset_for_reuse(Voice *v, uint8_t ch, uint8_t note, uint8_t vel) {
+    arena_restore(&v->arena, v->snapshot);
+    for (size_t i = 0; i < v->n_comps; i++) component_reset(v->comps[i].c);
+    v->note = note;
+    v->chan = ch;
+    v->velocity = vel;
+    v->draining = false;
+    v->zero_count = 0;
+    // wait_for_env is a property of the patch (set in Apply) and is
+    // unchanged across reuses, so it is intentionally left as is.
+}
+
 void voice_free(Voice *v) {
     if (!v) return;
+    arena_snapshot_free(v->snapshot);
+    v->snapshot = NULL;
     // Defensively release any phase clocks still registered on the shared
     // Instant before dropping the voice's arena. Normal teardown
     // (remove_voice) already releases them - this is idempotent - but it

@@ -54,6 +54,12 @@ typedef struct Voice {
     // consecutive samples.
     bool draining;
     int zero_count;
+
+    // Pooling: snapshot is the byte-exact post-Apply arena image used to
+    // reset the voice for reuse; pool is an opaque back-reference to the
+    // idle pool this voice returns to (NULL for non-pooled voices).
+    ArenaSnapshot *snapshot;
+    void *pool;
 } Voice;
 
 // voice_new allocates a fresh voice with its main mix junction.
@@ -95,6 +101,16 @@ void voice_dispatch_midi(Voice *v, MidiMsg m);
 void voice_set_wait_for_env(Voice *v, bool b);
 bool voice_wait_for_env(const Voice *v);
 void voice_start_draining(Voice *v);
+
+// voice_build_snapshot captures the post-Apply arena image for recycling.
+// Call once, after the patch has been applied and before the first note.
+void voice_build_snapshot(Voice *v);
+
+// voice_reset_for_reuse restores the snapshot (resetting every in-arena
+// component to its post-Apply state), resets out-of-arena state (phase
+// clocks, via each component's reset), and re-stamps the voice for a new
+// note. The wire graph and component wiring are untouched.
+void voice_reset_for_reuse(Voice *v, uint8_t ch, uint8_t note, uint8_t vel);
 
 // Junction helpers (also used by the mix component).
 Junction *junction_new(Voice *v);

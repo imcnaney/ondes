@@ -73,3 +73,44 @@ void arena_free(Arena *a) {
     }
     a->head = NULL;
 }
+
+struct ArenaSnapshot {
+    size_t n;
+    struct {
+        ArenaBlock *blk;
+        size_t used;
+        void *copy;
+    } *items;
+};
+
+ArenaSnapshot *arena_snapshot(Arena *a) {
+    size_t n = 0;
+    for (ArenaBlock *b = a->head; b; b = b->next) n++;
+    ArenaSnapshot *s = malloc(sizeof(*s));
+    s->n = n;
+    s->items = malloc(n * sizeof(*s->items));
+    size_t i = 0;
+    for (ArenaBlock *b = a->head; b; b = b->next, i++) {
+        s->items[i].blk = b;
+        s->items[i].used = b->used;
+        s->items[i].copy = malloc(b->used);
+        memcpy(s->items[i].copy, b->data, b->used);
+    }
+    return s;
+}
+
+void arena_restore(Arena *a, const ArenaSnapshot *snap) {
+    (void)a; // blocks are addressed directly; no growth allowed since snapshot
+    for (size_t i = 0; i < snap->n; i++) {
+        memcpy(snap->items[i].blk->data, snap->items[i].copy,
+               snap->items[i].used);
+        snap->items[i].blk->used = snap->items[i].used;
+    }
+}
+
+void arena_snapshot_free(ArenaSnapshot *snap) {
+    if (!snap) return;
+    for (size_t i = 0; i < snap->n; i++) free(snap->items[i].copy);
+    free(snap->items);
+    free(snap);
+}

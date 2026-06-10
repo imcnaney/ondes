@@ -35,4 +35,19 @@ void *arena_grow(Arena *a, void *old, size_t old_n, size_t new_n, size_t elem);
 // arena_free releases every block. The arena is reusable afterward.
 void arena_free(Arena *a);
 
+// ArenaSnapshot captures the live contents of every block so the arena can
+// later be restored byte-for-byte. It underpins voice recycling: after a
+// voice graph is built, snapshot it; to reuse the voice for a new note,
+// restore it - resetting ALL in-arena component state to its exact
+// post-construction values with no risk of missing a field. Because the
+// blocks are not moved, every pointer in the restored data stays valid.
+//
+// Valid only while the arena is not grown after the snapshot (the synth's
+// per-sample path never allocates, so this holds during play).
+typedef struct ArenaSnapshot ArenaSnapshot;
+
+ArenaSnapshot *arena_snapshot(Arena *a);
+void arena_restore(Arena *a, const ArenaSnapshot *snap);
+void arena_snapshot_free(ArenaSnapshot *snap);
+
 #endif // ONDES_ARENA_H

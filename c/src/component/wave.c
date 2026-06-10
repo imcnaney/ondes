@@ -253,6 +253,24 @@ static void wave_add_input(Component *self, const char *sel, Wire *src) {
 
 static Wire *wave_output(Component *self) { return ((Wave *)self)->out; }
 
+// wave_reset re-zeroes the phase clocks (which live on the shared Instant,
+// outside the voice arena, so the arena snapshot can't restore them) to
+// the configured base frequency and phase 0. For note-pitched waves a
+// subsequent note-on retune overrides the frequency; for fixed-freq LFOs
+// this is the reset that matters - without it a recycled LFO would resume
+// at whatever phase it drifted to while the slot was idle.
+static void wave_reset(Component *self) {
+    Wave *w = (Wave *)self;
+    if (w->clock) {
+        phase_clock_set_frequency(w->clock, w->base_freq);
+        phase_clock_reset_phase(w->clock);
+    }
+    for (size_t i = 0; i < w->n_extra; i++) {
+        phase_clock_set_frequency(w->extra[i], w->base_freq * w->mults[i]);
+        phase_clock_reset_phase(w->extra[i]);
+    }
+}
+
 static int wave_configure(Component *self, const Spec *spec, Voice *v,
                           const char *name) {
     (void)name;
@@ -357,6 +375,7 @@ static const ComponentVTable WAVE_VT = {
     .add_input = wave_add_input,
     .on_midi = wave_on_midi,
     .named_output = NULL,
+    .reset = wave_reset,
 };
 
 Component *wave_new(Arena *a) {

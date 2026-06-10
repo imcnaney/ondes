@@ -103,11 +103,31 @@ static void test_voice_lifecycle(void) {
     synth_free(s);
 }
 
+// --- voice pool: a finished voice is recycled, not rebuilt ---
+static void test_pool_reuse(void) {
+    static int dummy;
+    SynthPatch sp = {.ctx = &dummy, .apply = test_apply};
+    Synth *s = synth_new(44100, sp);
+    synth_set_pool_enabled(s, true);
+
+    for (int i = 0; i < 5; i++) {
+        synth_note_on(s, 0, 60, 100);
+        CHECK(synth_active_voices(s) == 1, "pooled voice active on note-on");
+        synth_step(s);
+        synth_note_off(s, 0, 60);
+        CHECK(synth_active_voices(s) == 0, "pooled voice returned on note-off");
+    }
+    // Five sequential notes reused a single graph rather than building five.
+    CHECK(synth_pool_size(s) == 1, "pool reused one voice across 5 notes");
+    synth_free(s); // frees the pooled voice + its clock; no leak
+}
+
 int main(void) {
     test_arena();
     test_wire();
     test_instant();
     test_voice_lifecycle();
+    test_pool_reuse();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

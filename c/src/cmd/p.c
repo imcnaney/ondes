@@ -15,6 +15,7 @@ int main(int argc, char **argv) {
     const char *patch_name = "sine";
     double tail_sec = 0.0023; // ~100 samples, Java default tail
     double max_tail_sec = 30.0;
+    int pool = 0;
 
     int i = 1;
     for (; i < argc; i++) {
@@ -24,6 +25,8 @@ int main(int argc, char **argv) {
             tail_sec = atof(argv[++i]);
         else if (!strcmp(argv[i], "-max-tail") && i + 1 < argc)
             max_tail_sec = atof(argv[++i]);
+        else if (!strcmp(argv[i], "-pool"))
+            pool = 1;
         else if (argv[i][0] != '-')
             break;
     }
@@ -61,6 +64,7 @@ int main(int argc, char **argv) {
     int64_t max_end = last + (int64_t)(max_tail_sec * ONDES_SAMPLE_RATE);
 
     Synth *s = synth_new(ONDES_SAMPLE_RATE, patch_as_synth_patch(p));
+    synth_set_pool_enabled(s, pool);
 
     size_t cap = (size_t)min_end + 1;
     double *samples = malloc(cap * sizeof(double));

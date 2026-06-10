@@ -35,6 +35,17 @@ int synth_active_voices(const Synth *s);
 // synth_set_channel_patch overrides the default patch for one channel.
 void synth_set_channel_patch(Synth *s, uint8_t ch, SynthPatch p);
 
+// synth_set_pool_enabled turns on voice-graph recycling: instead of
+// building and freeing a voice per note, finished voices are reset and
+// returned to a per-patch pool, so note-on reuses a pre-built graph rather
+// than re-running patch.Apply on the audio thread. Off by default (the
+// fresh-per-note path). Set before play begins.
+void synth_set_pool_enabled(Synth *s, bool enabled);
+
+// synth_pool_size reports how many voices have been built into pools (for
+// tests/diagnostics).
+int synth_pool_size(const Synth *s);
+
 void synth_note_on(Synth *s, uint8_t ch, uint8_t note, uint8_t vel);
 void synth_note_off(Synth *s, uint8_t ch, uint8_t note);
 void synth_control_change(Synth *s, uint8_t ch, uint8_t cc, uint8_t val);
