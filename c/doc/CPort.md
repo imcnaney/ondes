@@ -16,13 +16,14 @@ so the per-note voice graph is built and torn down deterministically. As
 with Go, render parity with Java is the correctness *guard*; clean live
 playback is the *point* (the live path is a later phase — see *Scope*).
 
-## Scope (this phase)
+## Scope
 
 | Capability | Java | Go | C |
 |---|---|---|---|
 | MIDI file → WAV render | `ondes.file.PlayMidiFile` (`./p`) | `cmd/p` | `c/build/p` — **at parity** |
-| Live MIDI → audio | `ondes.App` (`./o`) | `cmd/o` | — deferred |
-| Device-list / monitor tools | yes | yes | — deferred |
+| Live MIDI → audio | `ondes.App` (`./o`) | `cmd/o` | `c/build/o` — miniaudio + CoreMIDI |
+| Device list (`-list`) | yes | yes | built into `o -list` |
+| Standalone device/monitor tools | yes | yes | — folded into `o -list` |
 | Wave editor GUI | `ondes.tools.WaveEditor` | — | — not ported |
 
 All ten registered component types are implemented (`wave`, `filter`,
@@ -32,21 +33,41 @@ limiter (`src/synth/limiter.c`), not a patch component.
 
 ## Build & run
 
-The C port uses CMake and has **no required system dependencies** — the
-offline path is plain C (a self-contained block-YAML parser, hand-written
-WAV writer and SMF reader):
+The C port uses CMake. The **offline path has no third-party
+dependencies** — it is plain C (a self-contained block-YAML parser,
+hand-written WAV writer and SMF reader). The **live path needs no
+installed libraries either**: audio output is the vendored single-header
+[miniaudio](https://miniaud.io/) (driving CoreAudio) and MIDI input is
+CoreMIDI, a macOS system framework.
 
 ```
 cmake -S c -B c/build && cmake --build c/build
+```
+
+### Offline render (`p`, any platform)
+
+```
 # render a MIDI file through a patch to WAV (run from the repo root so
 # ./program and src/main/resources/program resolve):
 c/build/p -patch <name> in.mid out.wav
 c/build/p -patch sine regression/fixtures/mid/scale.mid /tmp/sine.wav
 ```
 
+### Live play (`o`, macOS)
+
+```
+c/build/o -list                          # list audio outputs + MIDI inputs
+c/build/o -in <port-substr> -patch <name>    # play live from a keyboard
+c/build/o -in <substr> -out <substr> -buffer-size 256 -patch brass
+c/build/o -in <substr> -hold -patch sine     # suppress note-offs (drone)
+c/build/o -patch 2:brass -patch sine         # multi-timbral: ch-2 + default
+c/build/o -selftest -patch ocean2            # play a note, no MIDI in (diag)
+```
+
 `-patch` accepts the same name forms as the Java/Go loaders (exact
 basename first, then a case-insensitive substring match, e.g.
-`-patch program/bell`). `-tail` / `-max-tail` mirror `cmd/p`.
+`-patch program/bell`); for `p`, `-tail` / `-max-tail` mirror `cmd/p`.
+`-in` / `-out` match a case-insensitive substring of the device label.
 
 ## Render parity & the regression harness
 
@@ -102,6 +123,18 @@ choices:
   port), converted to int16 only in the WAV writer, so the committed
   parity summaries apply unchanged.
 
+- **Live threading.** `cmd/o` mirrors Java's `MidiListenerThread` and the
+  Go port: the engine is single-threaded and owned by the miniaudio render
+  callback. The CoreMIDI callback (a separate thread) parses the raw byte
+  stream — handling running status — and pushes note/CC commands onto a
+  lock-free single-producer/single-consumer ring (C11 `stdatomic`), which
+  the audio callback drains at the top of each period before rendering. No
+  lock sits on the per-sample path; on overflow the MIDI side drops and
+  counts rather than blocking. The audio (`src/audiodev/`) and MIDI
+  (`src/mididev/`) layers are excluded from the offline `libondes`, so the
+  renderer stays dependency-free and the live deps are linked only into
+  `o`.
+
 - **Self-contained YAML.** `src/patch/yaml_spec.c` is a focused
   block-style YAML parser for the patch subset actually used by the corpus
   (block maps and sequences — including sequences aligned with their key —
@@ -118,13 +151,19 @@ choices:
 - **Memory:** ASan + UBSan renders of the heaviest/polyphonic fixtures
   (`ocean2`, `bell-organ` chord, `brass`, `repeater`) are clean; macOS
   `leaks` reports 0 leaks (LSan is unavailable on Apple clang).
+- **Live path:** `o -selftest` drives a note through the exact live render
+  path (ring → `render` → engine) and reports the output peak — `sine`
+  matches the offline render (0.0195), `brass`/`ocean2` scale up as
+  expected. The CoreMIDI input layer is verified by an in-process
+  virtual-source loopback (note-on, CC, running-status and note-off all
+  parse correctly).
 
 ## Known gaps / deferred
 
-- **Live MIDI/audio path** (`o`-equivalent) and device-list tools — a
-  later phase. The intended native dependencies are vendored single-header
-  **miniaudio** (audio out — the same library Go's malgo wraps) and
-  RtMidi's C API (MIDI in).
+- **Live path is macOS-only.** Audio (miniaudio) is cross-platform, but
+  MIDI input uses CoreMIDI directly. A Linux/Windows build would add an
+  ALSA/WinMM or RtMidi backend behind the existing `mididev.h` interface.
+  Live play has been exercised on macOS/CoreAudio only.
 - **Voice pool** — deferred for the same measured reasons as the Go port
   (per-note setup is negligible; a pool is a real parity risk). See
   *Known gaps* in [GoPort.md](../../doc/GoPort.md).
