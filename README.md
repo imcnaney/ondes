@@ -9,7 +9,7 @@ To hear some of what you can do so far:
 
 There is extensive documentation starting at [Voice.md](doc/Voice.md) and there are a number of example patches included.
 
-Per-note voice-setup timings for the Go port are in [timings.md](doc/timings.md).
+The engine has also been ported to Go ([GoPort.md](doc/GoPort.md)) and to C ([CPort.md](c/doc/CPort.md)); both hold render parity with the Java reference. Per-note voice-setup timings for the Go port are in [timings.md](doc/timings.md).
  
 ![](doc/images/ondes-synth-architecture-diagram.png)
 For more diagrams, see [Diagrams.md](doc/Diagrams.md)
