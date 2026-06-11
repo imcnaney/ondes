@@ -97,9 +97,15 @@ choices:
 
 - **Pull-driven graph.** `Wire` (`include/ondes/wire.h`) is the C
   equivalent of Java's `WiredIntSupplier` / Go's `synth.Wire`: a
-  `double (*compute)(void *ctx)` plus a latched value and a per-sample
-  `visited` flag, so self-feeding (FM) graphs don't recurse.
-  `synth_step` is the hot path and allocates nothing.
+  `double (*compute)(void *ctx)` plus a latched value, so self-feeding (FM)
+  graphs don't recurse. Latching uses a **generation counter** rather than
+  a per-wire flag: a wire is current iff its `gen` equals the global
+  `ondes_wire_gen`, which `synth_step` bumps once per sample
+  (`wire_advance_gen`) — invalidating the whole graph in O(1), with no
+  reset pass and no need for the voice to track its wires. `synth_step` is
+  the hot path and allocates nothing. Oscillators use a 4096-entry sine
+  table (`fast_sin` in `component/wave.c`) instead of libm `sin()`; see
+  [timings.md](timings.md).
 
 - **Per-voice arena.** Each `Voice` owns one arena allocator
   (`include/ondes/arena.h`); every component, wire, junction and per-voice

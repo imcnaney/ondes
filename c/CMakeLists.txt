@@ -55,9 +55,11 @@ if(APPLE)
     PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
-# Per-note setup benchmark (fresh build vs pool reset).
+# Benchmarks: per-note setup (fresh vs pool) and per-sample render throughput.
 add_executable(note_setup ${CMAKE_SOURCE_DIR}/bench/note_setup.c)
 target_link_libraries(note_setup PRIVATE ondes)
+add_executable(render_throughput ${CMAKE_SOURCE_DIR}/bench/render_throughput.c)
+target_link_libraries(render_throughput PRIVATE ondes)
 
 # Unit tests.
 enable_testing()

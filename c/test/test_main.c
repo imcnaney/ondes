@@ -45,10 +45,10 @@ static void test_wire(void) {
     CHECK(wire_get(&w) == 1.0, "wire value");
     wire_get(&w);
     wire_get(&w);
-    CHECK(compute_calls == 1, "wire computes once per sample");
-    wire_reset(&w);
+    CHECK(compute_calls == 1, "wire computes once per generation");
+    wire_advance_gen();
     wire_get(&w);
-    CHECK(compute_calls == 2, "wire recomputes after reset");
+    CHECK(compute_calls == 2, "wire recomputes after generation advance");
 }
 
 // --- instant clocks ---

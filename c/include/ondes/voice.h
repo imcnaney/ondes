@@ -38,9 +38,6 @@ typedef struct Voice {
     } *comps;
     size_t n_comps, cap_comps;
 
-    Wire **wires;
-    size_t n_wires, cap_wires;
-
     PhaseClock **clocks; // phase clocks this voice owns, released on teardown
     size_t n_clocks, cap_clocks;
 
@@ -74,8 +71,9 @@ Arena *voice_arena(Voice *v);
 // voice_note_freq returns the equal-tempered frequency for the MIDI note.
 double voice_note_freq(const Voice *v);
 
-// voice_new_wire allocates a wire from the voice arena and registers it so
-// it is reset each sample.
+// voice_new_wire allocates a wire from the voice arena. Wires are
+// invalidated per sample globally (see wire_advance_gen), so the voice
+// does not track them.
 Wire *voice_new_wire(Voice *v, double (*compute)(void *), void *ctx);
 
 // voice_add_phase_clock creates a phase clock owned by this voice.
@@ -88,8 +86,6 @@ void voice_release_clocks(Voice *v);
 void voice_add_voice_mix_input(Voice *v, Wire *w);
 // voice_main_output is the voice's contribution to the main mix.
 Wire *voice_main_output(Voice *v);
-
-void voice_reset_wires(Voice *v);
 
 void voice_add_component(Voice *v, const char *name, Component *c);
 Component *voice_component(Voice *v, const char *name);
