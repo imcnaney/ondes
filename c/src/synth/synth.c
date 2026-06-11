@@ -273,7 +273,7 @@ static void pending_add(Synth *s, uint8_t ch, uint8_t note) {
 
 double synth_step(Synth *s) {
     instant_next(s->instant);
-    for (size_t i = 0; i < s->n_active; i++) voice_reset_wires(s->active[i]);
+    wire_advance_gen(); // invalidate every voice's wires for this sample (O(1))
 
     double sum = 0;
     for (size_t i = 0; i < s->n_active; i++) {

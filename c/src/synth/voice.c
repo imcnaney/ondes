@@ -90,13 +90,6 @@ double voice_note_freq(const Voice *v) {
 Wire *voice_new_wire(Voice *v, double (*compute)(void *), void *ctx) {
     Wire *w = arena_alloc(&v->arena, sizeof(*w));
     wire_init(w, compute, ctx);
-    if (v->n_wires == v->cap_wires) {
-        size_t cap = v->cap_wires ? v->cap_wires * 2 : 8;
-        v->wires =
-            arena_grow(&v->arena, v->wires, v->n_wires, cap, sizeof(*v->wires));
-        v->cap_wires = cap;
-    }
-    v->wires[v->n_wires++] = w;
     return w;
 }
 
@@ -124,10 +117,6 @@ void voice_add_voice_mix_input(Voice *v, Wire *w) {
 }
 
 Wire *voice_main_output(Voice *v) { return junction_output(v->voice_mix); }
-
-void voice_reset_wires(Voice *v) {
-    for (size_t i = 0; i < v->n_wires; i++) wire_reset(v->wires[i]);
-}
 
 void voice_add_component(Voice *v, const char *name, Component *c) {
     if (v->n_comps == v->cap_comps) {

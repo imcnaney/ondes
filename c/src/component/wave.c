@@ -13,6 +13,32 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// Sine lookup table (restores the Java port's SineLookup, which the Go/C
+// ports had regressed to libm sin()). Oscillators call sin() once per
+// partial per voice per sample, so for harmonic/anharmonic stacks this is
+// the dominant cost. A 4096-entry table + linear interpolation matches
+// Java's resolution; the small interpolation error stays well within the
+// regression tolerance. fast_sin's argument is in turns (cycles), i.e. it
+// returns sin(2*pi*turns).
+#define SINE_TABLE_BITS 12
+#define SINE_TABLE_SIZE (1 << SINE_TABLE_BITS)
+static double sine_table[SINE_TABLE_SIZE + 1]; // +1 guard for interpolation
+static bool sine_table_ready;
+
+static void sine_table_init(void) {
+    for (int i = 0; i <= SINE_TABLE_SIZE; i++)
+        sine_table[i] = sin(2 * M_PI * (double)i / SINE_TABLE_SIZE);
+    sine_table_ready = true;
+}
+
+static inline double fast_sin(double turns) {
+    turns -= floor(turns); // wrap to [0, 1)
+    double x = turns * SINE_TABLE_SIZE;
+    int i = (int)x;
+    double frac = x - (double)i;
+    return sine_table[i] + frac * (sine_table[i + 1] - sine_table[i]);
+}
+
 typedef enum {
     SH_SINE,
     SH_SAW,
@@ -174,7 +200,7 @@ static double wave_gen(Wave *w) {
     double phase = phase_clock_phase(w->clock);
     switch (w->shape) {
     case SH_SINE:
-        return sin(2 * M_PI * phase);
+        return fast_sin(phase);
     case SH_SAW: // misleadingly named: actually a triangle wave
         return phase < 0.5 ? 4 * phase - 1 : 4 * (1 - phase) - 1;
     case SH_SQUARE:
@@ -186,15 +212,15 @@ static double wave_gen(Wave *w) {
     case SH_HARMONIC: {
         double sum = 0;
         for (size_t i = 0; i + 1 < w->n_harm; i += 2)
-            sum += sin(2 * M_PI * phase * w->harm[i]) / w->harm[i + 1];
+            sum += fast_sin(phase * w->harm[i]) / w->harm[i + 1];
         return sum;
     }
     case SH_ANHARMONIC: {
         double sum = 0;
         for (size_t i = 0; i + 1 < w->n_harm; i += 2)
-            sum += sin(2 * M_PI * phase * w->harm[i]) / w->harm[i + 1];
+            sum += fast_sin(phase * w->harm[i]) / w->harm[i + 1];
         for (size_t i = 0; i + 1 < w->n_anharm; i += 2)
-            sum += sin(2 * M_PI * phase_clock_phase(w->extra[i / 2])) /
+            sum += fast_sin(phase_clock_phase(w->extra[i / 2])) /
                    w->anharm[i + 1];
         return sum;
     }
@@ -275,6 +301,7 @@ static int wave_configure(Component *self, const Spec *spec, Voice *v,
                           const char *name) {
     (void)name;
     Wave *w = (Wave *)self;
+    if (!sine_table_ready) sine_table_init();
     Arena *a = voice_arena(v);
     w->voice = v;
     wirelist_init(&w->pwm_in, a);
