@@ -1,0 +1,19 @@
+
+# Minimal vibrato test: a 5Hz LFO sine modulates the carrier's pitch
+# through input-log by +/- 0.5 semitone.
+
+lfo:
+  freq: 5
+  type: wave
+  shape: sine
+  level-override: 1000
+  out: osc.log
+
+osc:
+  midi: note-on
+  type: wave
+  shape: sine
+  input-log:
+    amp: 1000
+    semitones: 0.5
+  out: main

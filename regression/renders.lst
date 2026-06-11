@@ -1,0 +1,63 @@
+# Single source of truth for what the regression harness renders.
+# Both gen-fixtures.sh and check.sh read this file.
+#
+# columns:  <wav-name>          <midi-name>         <patch-spec>
+#
+# midi-name is the basename in fixtures/mid (without .mid)
+# patch-spec is the substring passed to PlayMidiFile; use a "program/"
+# prefix when the bare name would collide with a resource patch.
+
+sine                    scale               sine
+saw                     scale               saw
+square                  scale               square
+ramp-up                 scale               ramp-up
+ramp-down               scale               ramp-down
+bassoon                 scale               bassoon
+buzz                    scale               buzz
+bell-organ              scale               bell-organ
+octave-organ            scale               octave-organ
+no-fundamental          scale               no-fundamental
+pwm                     scale               pwm
+square-filtered         scale               square-filtered
+ah-fm                   scale               ah-fm
+bell                    scale               program/bell
+brass                   scale               brass
+glock                   scale               glock
+ring-mod                scale               ring-mod
+fade-octave             scale               fade-octave
+fourths                 scale               fourths
+repeater                scale               repeater
+pink                    scale               pink
+vibrato                 scale               vibrato
+
+sine-chord              chord               sine
+bell-organ-chord        chord               bell-organ
+
+sine-ce                 close_encounters    sine
+saw-ce                  close_encounters    saw
+square-ce               close_encounters    square
+ramp-up-ce              close_encounters    ramp-up
+ramp-down-ce            close_encounters    ramp-down
+bassoon-ce              close_encounters    bassoon
+buzz-ce                 close_encounters    buzz
+bell-organ-ce           close_encounters    bell-organ
+octave-organ-ce         close_encounters    octave-organ
+no-fundamental-ce       close_encounters    no-fundamental
+pwm-ce                  close_encounters    pwm
+square-filtered-ce      close_encounters    square-filtered
+ah-fm-ce                close_encounters    ah-fm
+bell-ce                 close_encounters    program/bell
+brass-ce                close_encounters    brass
+glock-ce                close_encounters    glock
+ring-mod-ce             close_encounters    ring-mod
+fade-octave-ce          close_encounters    fade-octave
+fourths-ce              close_encounters    fourths
+repeater-ce             close_encounters    repeater
+pink-ce                 close_encounters    pink
+vibrato-ce              close_encounters    vibrato
+
+# sustain.mid: long held notes + controller-A sweep, for slow/ambient
+# and modulation-driven patches (smooth, balancer).
+smooth                  sustain             smooth
+balancer                sustain             balancer
+ocean2                  sustain             ocean2

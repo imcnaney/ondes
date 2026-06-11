@@ -15,3 +15,17 @@ bin
 .project
 .settings
 .vs
+
+# Regression harness build/log artifacts (fixtures themselves are committed)
+regression/*.class
+regression/__pycache__/
+regression/fixtures/log/
+
+# Go build artifacts
+/spike
+/bin/
+*.test
+*.out
+
+# macOS Finder metadata
+.DS_Store

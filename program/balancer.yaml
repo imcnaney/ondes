@@ -1,0 +1,43 @@
+# Demonstrates the `balancer` component: crossfades its `left` and
+# `right` inputs by a `ctrl` value. Here a slow saw LFO, gated by
+# controller A (CC 12), sweeps the balance between two oscillators.
+
+ctrl12:
+  type: controller
+  number: 12  # controller A - amount of modulation
+  amp: 1000
+  out: op-amp
+
+mod-osc:
+  type: wave
+  shape: saw
+  freq: .333
+  signed: true
+  level-override: 1000
+  out: op-amp
+
+op-amp:
+  type: op-amp
+  out: balancer.ctrl
+
+osc1:
+  midi: note-on
+  offset: 0
+  detune: 7
+  type: wave
+  shape: square
+  out: balancer.right
+
+osc2:
+  midi: note-on
+  offset: 12
+  type: wave
+  shape: ramp-up
+  out: balancer.left
+
+balancer:
+  type: balancer
+  input-ctrl:
+    initial-value: 0
+    amp: 1000000  # implies -1000..1000
+  out: main
