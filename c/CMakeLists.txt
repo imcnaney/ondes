@@ -55,6 +55,10 @@ if(APPLE)
     PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
+# Per-note setup benchmark (fresh build vs pool reset).
+add_executable(note_setup ${CMAKE_SOURCE_DIR}/bench/note_setup.c)
+target_link_libraries(note_setup PRIVATE ondes)
+
 # Unit tests.
 enable_testing()
 add_executable(ondes_tests ${CMAKE_SOURCE_DIR}/test/test_main.c)

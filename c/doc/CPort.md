@@ -165,7 +165,10 @@ choices:
   as a diff), the 3 noise fixtures are summary-checked, and the pooled
   renders must still pass 49/49 against the Java summaries. Measured reuse:
   `sine`/scale recycles one voice across all 8 notes (8×) with bit-identical
-  output; overlapping notes (`brass`, `ocean2`) correctly grow the pool.
+  output; overlapping notes (`brass`, `ocean2`) correctly grow the pool. The
+  reset is constant-time (~40–85 ns) where a fresh build scales with patch
+  size (~0.5–3.7 µs), a 10–50× setup speedup — see [timings.md](timings.md)
+  (`c/build/note_setup`).
 
 - **Self-contained YAML.** `src/patch/yaml_spec.c` is a focused
   block-style YAML parser for the patch subset actually used by the corpus
