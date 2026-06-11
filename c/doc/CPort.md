@@ -43,6 +43,21 @@ CoreMIDI, a macOS system framework.
 cmake -S c -B c/build && cmake --build c/build
 ```
 
+No CMake (or a broken install)? A plain Makefile builds the same binaries
+into `c/build/` with nothing but a C compiler:
+
+```
+cd c && make            # offline tools + tests + benches (+ live `o` on macOS)
+make test               # build and run the unit tests
+make compile_commands.json   # editor IntelliSense DB (see below)
+```
+
+**Editor setup.** If VS Code / clangd flags includes like `<stdatomic.h>`
+as undefined, it just doesn't know the include paths or the C11 standard.
+Either rely on the committed `c/.clangd` (clangd reads it automatically) or
+run `make compile_commands.json` and point the C/C++ extension's
+`compileCommands` setting at `c/compile_commands.json`.
+
 ### Offline render (`p`, any platform)
 
 ```

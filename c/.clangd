@@ -1,0 +1,11 @@
+# clangd configuration for the C port. Without this, clangd (and VS Code's
+# clangd extension) may not find the include dirs or know this is C11, which
+# is why headers like <stdatomic.h> show up as "undefined". These flags
+# match the Makefile / CMake build.
+CompileFlags:
+  Add:
+    - -std=gnu11
+    - -Iinclude
+    - -Isrc/component
+    - -Ithird_party/miniaudio
+  Compiler: cc
