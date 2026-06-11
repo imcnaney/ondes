@@ -5,7 +5,7 @@
 #include <string.h>
 
 // Default block payload. Voice graphs are small (a few KB even for the
-// heaviest fixture, per doc/timings.md), so one block usually suffices;
+// heaviest fixture, per c/doc/timings.md), so one block usually suffices;
 // an oversized request gets its own exact-fit block.
 #define ARENA_BLOCK 8192
 #define ARENA_ALIGN (sizeof(max_align_t))

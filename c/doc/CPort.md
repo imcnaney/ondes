@@ -1,12 +1,11 @@
 # The C port
 
-OndeSynth has a C port of the synth engine alongside the original Java and
-the [Go port](../../doc/GoPort.md). It lives entirely under `c/` and is
-additive: the Java tree (`src/main/java`) remains the reference
-implementation, and the Go tree is untouched. The C port follows the Go
-port's architecture decision-for-decision (the Go port already made every
-Java→native call once); its correctness bar is the **same committed
-Java-rendered regression summaries** the Go port is held to.
+OndeSynth has a C port of the synth engine alongside the original Java. It
+lives entirely under `c/` and is additive: the Java tree
+(`src/main/java`) remains the reference implementation. The C port was
+derived from an earlier Go port (since removed) that had already made every
+Java→native call once; its correctness bar is the **committed
+Java-rendered regression summaries** in `regression/fixtures/summary/`.
 
 ## Why this port exists
 
@@ -18,18 +17,18 @@ playback is the *point* (the live path is a later phase — see *Scope*).
 
 ## Scope
 
-| Capability | Java | Go | C |
-|---|---|---|---|
-| MIDI file → WAV render | `ondes.file.PlayMidiFile` (`./p`) | `cmd/p` | `c/build/p` — **at parity** |
-| Live MIDI → audio | `ondes.App` (`./o`) | `cmd/o` | `c/build/o` — miniaudio + CoreMIDI |
-| Device list (`-list`) | yes | yes | built into `o -list` |
-| Standalone device/monitor tools | yes | yes | — folded into `o -list` |
-| Wave editor GUI | `ondes.tools.WaveEditor` | — | — not ported |
+| Capability | Java | C |
+|---|---|---|
+| MIDI file → WAV render | `ondes.file.PlayMidiFile` (`./p`) | `c/build/p` — **at parity** |
+| Live MIDI → audio | `ondes.App` (`./o`) | `c/build/o` — miniaudio + CoreMIDI |
+| Device list (`-list`) | yes | built into `o -list` |
+| Standalone device/monitor tools | yes | folded into `o -list` |
+| Wave editor GUI | `ondes.tools.WaveEditor` | — not ported |
 
 All ten registered component types are implemented (`wave`, `filter`,
 `env`, `mix`/`dynamic-mix`, `balancer`, `op-amp`, `controller`, `smooth`,
-`midi-note`, `echo`). As in the Go port, `limiter` is the global main-mix
-limiter (`src/synth/limiter.c`), not a patch component.
+`midi-note`, `echo`). `limiter` is the global main-mix limiter
+(`src/synth/limiter.c`), not a patch component.
 
 ## Build & run
 
@@ -89,11 +88,12 @@ identically under both ports).
 
 ## Engine architecture notes (C-specific)
 
-The signal-flow model is identical to Java/Go; only the realization in C
-differs. See [GoPort.md](../../doc/GoPort.md) for the shared decisions
-(pull-driven graph, per-`(channel,note)` voices, flattened component
-context, phase-clock lifecycle, CC replay, draining tails). The C-specific
-choices:
+The signal-flow model matches the Java engine; only the realization in C
+differs. The shared design carried over from the original Java/Go work is:
+a pull-driven wire graph, per-`(channel,note)` voices, component context
+flattened to per-voice, phase clocks released with their voice, channel CC
+replayed into each new voice, and effect tails drained to silence before a
+voice is freed. The C-specific choices:
 
 - **Pull-driven graph.** `Wire` (`include/ondes/wire.h`) is the C
   equivalent of Java's `WiredIntSupplier` / Go's `synth.Wire`: a

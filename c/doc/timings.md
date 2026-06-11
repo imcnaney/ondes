@@ -1,7 +1,6 @@
 # C port — per-note voice-setup timings
 
-Per-note voice setup for the C port, the counterpart of the Go port's
-[timings.md](../../doc/timings.md). Reproduce with:
+Per-note voice setup for the C port. Reproduce with:
 
 ```
 cmake --build c/build --target note_setup
@@ -18,7 +17,12 @@ The benchmark times two paths per patch (20 000 iterations each):
 
 ## Results (Apple Silicon, -O2)
 
-| patch | fresh ns/op | pool ns/op | speedup | Go fresh ns/op |
+The last column records the now-removed Go port's `BenchmarkNoteOnSetup`
+figures, kept for the comparison: the C arena makes the fresh build cheaper
+than Go's (dramatically so for heavy patches), before the pool is even
+considered.
+
+| patch | fresh ns/op | pool ns/op | speedup | (Go fresh, removed) |
 |---|---:|---:|---:|---:|
 | sine | ~686 | ~66 | ~10× | ~846 |
 | saw | ~512 | ~47 | ~11× | ~841 |
@@ -26,8 +30,6 @@ The benchmark times two paths per patch (20 000 iterations each):
 | bell-organ | ~847 | ~42 | ~20× | ~1454 |
 | brass | ~3745 | ~76 | ~49× | ~5463 |
 | ocean2 (heaviest) | ~3133 | ~82 | ~38× | ~25552 |
-
-(Go figures from `go test ./regression -run='^$' -bench=NoteOnSetup -benchmem`.)
 
 ## Reading
 
