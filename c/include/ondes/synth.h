@@ -46,6 +46,18 @@ void synth_set_pool_enabled(Synth *s, bool enabled);
 // tests/diagnostics).
 int synth_pool_size(const Synth *s);
 
+// synth_reserve pre-sizes the internal voice bookkeeping arrays for up to
+// max_voices simultaneous voices, so note-on/off never reallocate on the
+// audio thread. Call once before play.
+void synth_reserve(Synth *s, int max_voices);
+
+// synth_prewarm builds n_per_patch voice graphs for the default patch and
+// each per-channel patch up front, parking them in the idle pool. Combined
+// with pooling and synth_reserve this makes a steady-state note-on
+// allocation-free (no voice_new/Apply on the audio thread). Requires
+// pooling enabled; call once before play, on a non-audio thread.
+void synth_prewarm(Synth *s, int n_per_patch);
+
 void synth_note_on(Synth *s, uint8_t ch, uint8_t note, uint8_t vel);
 void synth_note_off(Synth *s, uint8_t ch, uint8_t note);
 void synth_control_change(Synth *s, uint8_t ch, uint8_t cc, uint8_t val);

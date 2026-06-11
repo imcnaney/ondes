@@ -5,7 +5,15 @@
 //   o -in <substr> [-patch name] [-out substr] [-buffer-size n] [-hold]
 //   o -list                       list MIDI inputs + audio outputs
 //   o -patch chan:name            per-channel patch (multi-timbral)
+//   o -voices N                   max polyphony to pre-warm (default 32)
+//   o -no-pool                    disable voice pooling (allocates per note)
 //   o -selftest                   play a note through the patch, no MIDI in
+//
+// Live defaults are tuned for clean, low-latency play: voice pooling is ON
+// and the pool is pre-warmed (-voices) before audio starts, so a note-on
+// reuses a pre-built graph and the audio callback never allocates; the
+// buffer defaults to 256 frames (~5.8 ms). On exit it reports the
+// worst-case per-buffer render time against the deadline and any underruns.
 //
 // Threading model (mirrors Java's MidiListenerThread / the Go port): the
 // engine is single-threaded and owned exclusively by the audio callback.
@@ -69,7 +77,20 @@ typedef struct {
     Synth *s;
     Ring ring;
     int hold;
+
+    // Real-time safety meter. The audio thread writes these; main reads
+    // them after audio_close (which stops the callback, providing the
+    // ordering), so plain fields are safe.
+    double period_ns;     // the per-buffer deadline
+    double max_render_ns; // worst-case buffer render time seen
+    long overruns;        // buffers whose render exceeded the deadline
 } Live;
+
+static double now_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e9 + t.tv_nsec;
+}
 
 static void apply_cmd(Synth *s, Cmd c) {
     switch (c.kind) {
@@ -79,9 +100,11 @@ static void apply_cmd(Synth *s, Cmd c) {
     }
 }
 
-// audio thread: drain the ring, then render the period.
+// audio thread: drain the ring, then render the period. Timed so we can
+// prove the worst-case render fits the buffer deadline (no underruns).
 static void render(float *out, unsigned frames, void *user) {
     Live *L = user;
+    double t0 = now_ns();
     Cmd c;
     while (ring_pop(&L->ring, &c)) apply_cmd(L->s, c);
     for (unsigned i = 0; i < frames; i++) {
@@ -89,6 +112,9 @@ static void render(float *out, unsigned frames, void *user) {
         out[2 * i] = v;
         out[2 * i + 1] = v;
     }
+    double el = now_ns() - t0;
+    if (el > L->max_render_ns) L->max_render_ns = el;
+    if (L->period_ns > 0 && el > L->period_ns) L->overruns++;
 }
 
 // MIDI thread: classify and enqueue.
@@ -133,8 +159,11 @@ static void msleep(long ms) {
 
 int main(int argc, char **argv) {
     const char *in_sub = NULL, *out_sub = NULL;
-    int buffer = 1024, sample_rate = ONDES_SAMPLE_RATE;
-    int hold = 0, list = 0, selftest = 0, pool = 0;
+    // Low-latency defaults for live play: a 256-frame buffer is ~5.8 ms,
+    // and pooling (with pre-warm below) keeps the audio callback
+    // allocation-free so small buffers don't underrun.
+    int buffer = 256, sample_rate = ONDES_SAMPLE_RATE;
+    int hold = 0, list = 0, selftest = 0, pool = 1, voices = 32;
     Assign assigns[MAX_PATCHES];
     int n_assign = 0;
 
@@ -155,7 +184,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "-selftest"))
             selftest = 1;
         else if (!strcmp(a, "-pool"))
-            pool = 1;
+            pool = 1; // on by default; kept for explicitness
+        else if (!strcmp(a, "-no-pool"))
+            pool = 0;
+        else if (!strcmp(a, "-voices") && i + 1 < argc)
+            voices = atoi(argv[++i]);
         else if (!strcmp(a, "-patch") && i + 1 < argc && n_assign < MAX_PATCHES) {
             const char *v = argv[++i];
             const char *colon = strchr(v, ':');
@@ -214,10 +247,20 @@ int main(int argc, char **argv) {
 
     Live L = {0};
     L.hold = hold;
+    L.period_ns = (double)buffer / sample_rate * 1e9;
     L.s = synth_new(sample_rate, def);
     synth_set_pool_enabled(L.s, pool);
     for (int ch = 0; ch < 16; ch++)
         if (has_chan[ch]) synth_set_channel_patch(L.s, (uint8_t)ch, by_chan[ch]);
+
+    // Pre-size bookkeeping and pre-build the voice graphs now (on this
+    // thread), so the audio callback never allocates during play.
+    if (pool && voices > 0) {
+        synth_reserve(L.s, voices);
+        synth_prewarm(L.s, voices);
+        printf("pool:  pre-warmed %d voices/patch (%d total)\n", voices,
+               synth_pool_size(L.s));
+    }
 
     if (selftest) {
         // Diagnostic: drive a note through the exact live render path
@@ -249,6 +292,10 @@ int main(int argc, char **argv) {
             ring_push(&L.ring, (Cmd){1, 0, 60, 0});
             msleep(400);
             audio_close(sa);
+            printf("selftest: worst-case buffer render %.3f / %.3f ms (%.1f%%),"
+                   " %ld underrun(s)\n",
+                   L.max_render_ns / 1e6, L.period_ns / 1e6,
+                   100.0 * L.max_render_ns / L.period_ns, L.overruns);
         }
         synth_free(L.s);
         for (int i = 0; i < n_loaded; i++) patch_free(loaded[i]);
@@ -291,14 +338,20 @@ int main(int argc, char **argv) {
     signal(SIGTERM, on_sigint);
     while (!g_stop) msleep(50);
 
+    midi_close(midi);
+    audio_close(audio); // stops the callback; L.* are now final
+
     unsigned long dropped = atomic_load(&L.ring.dropped);
     if (dropped)
         printf("\n(dropped %lu MIDI events under load - try a larger "
                "-buffer-size)\n",
                dropped);
-
-    midi_close(midi);
-    audio_close(audio);
+    printf("audio: worst-case buffer render %.3f / %.3f ms budget (%.1f%%), "
+           "%ld underrun(s)\n",
+           L.max_render_ns / 1e6, L.period_ns / 1e6,
+           100.0 * L.max_render_ns / L.period_ns, L.overruns);
+    if (L.overruns == 0)
+        printf("       clean: every buffer met its deadline\n");
     synth_free(L.s);
     for (int i = 0; i < n_loaded; i++) patch_free(loaded[i]);
     return 0;

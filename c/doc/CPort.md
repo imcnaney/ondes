@@ -58,17 +58,39 @@ c/build/p -pool -patch sine in.mid out.wav   # recycle voice graphs
 ```
 c/build/o -list                          # list audio outputs + MIDI inputs
 c/build/o -in <port-substr> -patch <name>    # play live from a keyboard
-c/build/o -in <substr> -out <substr> -buffer-size 256 -patch brass
+c/build/o -in <substr> -out <substr> -voices 48 -patch brass
 c/build/o -in <substr> -hold -patch sine     # suppress note-offs (drone)
 c/build/o -patch 2:brass -patch sine         # multi-timbral: ch-2 + default
 c/build/o -selftest -patch ocean2            # play a note, no MIDI in (diag)
-c/build/o -in <substr> -pool -patch brass    # recycle voice graphs
 ```
 
-`-patch` accepts the same name forms as the Java/Go loaders (exact
-basename first, then a case-insensitive substring match, e.g.
-`-patch program/bell`); for `p`, `-tail` / `-max-tail` mirror `cmd/p`.
-`-in` / `-out` match a case-insensitive substring of the device label.
+`-patch` accepts the same name forms as the Java loader (exact basename
+first, then a case-insensitive substring match, e.g. `-patch program/bell`);
+for `p`, `-tail` / `-max-tail` mirror the renderer. `-in` / `-out` match a
+case-insensitive substring of the device label.
+
+### Real-time safety (live quality)
+
+A dropout is an audible click, so the live goal is an audio callback that
+**never blocks**: no allocation, no locks, no I/O on the audio thread.
+`o` defaults are tuned for this:
+
+- **Voice pooling on, pre-warmed.** Before audio starts, `synth_prewarm`
+  builds `-voices N` (default 32) voice graphs per patch into the idle
+  pool, and `synth_reserve` pre-sizes the bookkeeping arrays. A steady-state
+  note-on then pops a pre-built graph and resets it (an arena `memcpy`) —
+  no `voice_new`/`Apply`/`realloc` on the audio thread. Verified: 500
+  rounds of an 8-note chord within the cap build **zero** new voices.
+  Exceeding the cap falls back to building (a rare, bounded allocation);
+  raise `-voices` to cover your peak polyphony. `-no-pool` reverts to the
+  allocate-per-note path.
+- **Small buffer.** Default 256 frames (~5.8 ms); MIDI→sound jitter is ≤
+  one buffer. The compute headroom makes this safe.
+- **Lock-free MIDI.** The CoreMIDI thread only pushes to an SPSC ring; the
+  audio thread drains it (no lock on the per-sample path).
+- **Underrun meter.** On exit `o` prints the worst-case per-buffer render
+  time against the deadline and the underrun count. Measured worst-case is
+  a low single-digit percent of the budget with zero underruns.
 
 ## Render parity & the regression harness
 

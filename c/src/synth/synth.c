@@ -122,6 +122,58 @@ static void all_pooled_add(Synth *s, Voice *v) {
     s->all_pooled[s->n_all++] = v;
 }
 
+void synth_reserve(Synth *s, int max_voices) {
+    if (max_voices <= 0) return;
+    if ((size_t)max_voices > s->cap_active) {
+        s->active = realloc(s->active, (size_t)max_voices * sizeof(*s->active));
+        s->cap_active = (size_t)max_voices;
+    }
+    if ((size_t)max_voices > s->cap_pending) {
+        s->pending =
+            realloc(s->pending, (size_t)max_voices * sizeof(*s->pending));
+        s->cap_pending = (size_t)max_voices;
+    }
+}
+
+// build_into_pool constructs one voice graph for a patch and parks it idle.
+// The placeholder (channel 0, note 60) is overwritten by voice_reset_for_reuse
+// on acquire. Returns NULL if the patch fails to apply.
+static Voice *build_into_pool(Synth *s, SynthPatch p) {
+    Pool *pool = pool_for(s, p.ctx);
+    Voice *v = voice_new(s, 0, 60, 100);
+    if (p.apply(p.ctx, v) != 0) {
+        voice_free(v);
+        return NULL;
+    }
+    voice_build_snapshot(v);
+    v->pool = pool;
+    all_pooled_add(s, v);
+    pool_push_idle(pool, v);
+    return v;
+}
+
+void synth_prewarm(Synth *s, int n_per_patch) {
+    if (!s->pool_enabled || n_per_patch <= 0) return;
+    // Collect the distinct patches (default + per-channel overrides).
+    SynthPatch list[17];
+    int nl = 0;
+    if (s->default_patch.ctx) list[nl++] = s->default_patch;
+    for (int ch = 0; ch < 16; ch++)
+        if (s->patches[ch].ctx) list[nl++] = s->patches[ch];
+
+    void *warmed[17];
+    int nw = 0;
+    for (int i = 0; i < nl; i++) {
+        bool seen = false;
+        for (int j = 0; j < nw; j++)
+            if (warmed[j] == list[i].ctx) seen = true;
+        if (seen) continue;
+        warmed[nw++] = list[i].ctx;
+        for (int k = 0; k < n_per_patch; k++)
+            if (!build_into_pool(s, list[i])) break; // broken patch; stop
+    }
+}
+
 void synth_set_channel_patch(Synth *s, uint8_t ch, SynthPatch p) {
     if (ch < 16) s->patches[ch] = p;
 }
