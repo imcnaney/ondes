@@ -1,7 +1,7 @@
-// mididev wraps CoreMIDI input-port discovery and a running input
-// connection for the live synth. macOS-only (CoreMIDI is a system
-// framework, so the live build needs no third-party MIDI library); a
-// cross-platform RtMidi backend could be added behind the same interface.
+// mididev is the platform-agnostic MIDI-input interface for the live synth.
+// Backends implement it per OS with no third-party library: CoreMIDI on
+// macOS (coremidi.c), winmm on Windows (winmm.c). Linux would add an ALSA
+// backend behind this same interface. The build selects one per platform.
 #ifndef ONDES_MIDIDEV_H
 #define ONDES_MIDIDEV_H
 

@@ -34,21 +34,32 @@ endif()
 add_executable(p ${CMAKE_SOURCE_DIR}/src/cmd/p.c)
 target_link_libraries(p PRIVATE ondes)
 
-# Live MIDI -> audio synth (the `o` tool). macOS only: audio out via the
-# vendored single-header miniaudio (CoreAudio), MIDI in via CoreMIDI - no
-# third-party libraries to install. Other platforms would add an RtMidi /
-# miniaudio-on-ALSA backend behind the same audiodev/mididev interfaces.
-if(APPLE)
+# Live MIDI -> audio synth (the `o` tool). Audio out is the vendored
+# single-header miniaudio (CoreAudio on macOS, WASAPI on Windows); MIDI in
+# is a per-platform backend behind mididev.h - CoreMIDI on macOS, winmm on
+# Windows - so no third-party MIDI library is needed. Linux would add an
+# ALSA backend behind the same interface.
+if(APPLE OR WIN32)
+  if(APPLE)
+    set(ONDES_MIDI_SRC ${CMAKE_SOURCE_DIR}/src/mididev/coremidi.c)
+  else()
+    set(ONDES_MIDI_SRC ${CMAKE_SOURCE_DIR}/src/mididev/winmm.c)
+  endif()
   add_executable(o
     ${CMAKE_SOURCE_DIR}/src/cmd/o.c
     ${CMAKE_SOURCE_DIR}/src/audiodev/audiodev.c
     ${CMAKE_SOURCE_DIR}/src/audiodev/miniaudio_impl.c
-    ${CMAKE_SOURCE_DIR}/src/mididev/coremidi.c)
+    ${ONDES_MIDI_SRC})
   target_include_directories(o PRIVATE ${CMAKE_SOURCE_DIR}/third_party/miniaudio)
-  target_link_libraries(o PRIVATE ondes
-    "-framework CoreFoundation" "-framework CoreAudio"
-    "-framework AudioToolbox" "-framework AudioUnit"
-    "-framework CoreMIDI")
+  if(APPLE)
+    target_link_libraries(o PRIVATE ondes
+      "-framework CoreFoundation" "-framework CoreAudio"
+      "-framework AudioToolbox" "-framework AudioUnit"
+      "-framework CoreMIDI")
+  else() # WIN32
+    # winmm for MIDI in; ole32 for miniaudio's WASAPI backend.
+    target_link_libraries(o PRIVATE ondes winmm ole32)
+  endif()
   # miniaudio is a large vendored single header; don't subject it to -Wall.
   set_source_files_properties(
     ${CMAKE_SOURCE_DIR}/src/audiodev/miniaudio_impl.c

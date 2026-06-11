@@ -1,10 +1,26 @@
 #include "ondes/audiodev.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <strings.h> // strcasestr
+#include <string.h>
 
 #include "miniaudio.h"
+
+// ci_contains: case-insensitive substring test. (strcasestr is not portable
+// - notably absent on Windows/MinGW - so we roll our own.)
+static int ci_contains(const char *hay, const char *needle) {
+    if (!needle || !*needle) return 1;
+    size_t nl = strlen(needle);
+    for (; *hay; hay++) {
+        size_t i = 0;
+        while (i < nl && hay[i] &&
+               tolower((unsigned char)hay[i]) == tolower((unsigned char)needle[i]))
+            i++;
+        if (i == nl) return 1;
+    }
+    return 0;
+}
 
 struct AudioOut {
     ma_context ctx;
@@ -63,7 +79,7 @@ AudioOut *audio_open(const char *substr, int sample_rate, int buffer_frames,
         if (ma_context_get_devices(&a->ctx, &playback, &n, NULL, NULL) ==
             MA_SUCCESS) {
             for (ma_uint32 i = 0; i < n; i++) {
-                if (strcasestr(playback[i].name, substr)) {
+                if (ci_contains(playback[i].name, substr)) {
                     chosen = playback[i].id;
                     dev_id = &chosen;
                     snprintf(label, labellen, "%s", playback[i].name);

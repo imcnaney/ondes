@@ -36,8 +36,8 @@ The C port uses CMake. The **offline path has no third-party
 dependencies** — it is plain C (a self-contained block-YAML parser,
 hand-written WAV writer and SMF reader). The **live path needs no
 installed libraries either**: audio output is the vendored single-header
-[miniaudio](https://miniaud.io/) (driving CoreAudio) and MIDI input is
-CoreMIDI, a macOS system framework.
+[miniaudio](https://miniaud.io/) (CoreAudio on macOS, WASAPI on Windows)
+and MIDI input is a per-platform system API (CoreMIDI / winmm).
 
 ```
 cmake -S c -B c/build && cmake --build c/build
@@ -51,6 +51,20 @@ cd c && make            # offline tools + tests + benches (+ live `o` on macOS)
 make test               # build and run the unit tests
 make compile_commands.json   # editor IntelliSense DB (see below)
 ```
+
+**Windows.** The offline tools and the engine are plain C and build with
+any compiler. For the live `o` (WASAPI audio out + winmm MIDI in), use the
+CMake path with **MinGW-w64** (`gcc`/`clang` — the engine relies on C11
+`stdatomic` and `clock_gettime`/`nanosleep`, which MinGW-w64 provides and
+older MSVC does not):
+
+```
+cmake -S c -B c/build -G "MinGW Makefiles" && cmake --build c/build
+```
+
+CMake auto-selects the winmm MIDI backend and links `winmm`/`ole32`. The
+`Makefile` is POSIX (macOS/Linux); on Windows use CMake. **The winmm
+backend compiles to the Win32 docs but has not been run on real hardware.**
 
 **Editor setup.** If VS Code / clangd flags includes like `<stdatomic.h>`
 as undefined, it just doesn't know the include paths or the C11 standard.
@@ -243,10 +257,11 @@ voice is freed. The C-specific choices:
 
 ## Known gaps / deferred
 
-- **Live path is macOS-only.** Audio (miniaudio) is cross-platform, but
-  MIDI input uses CoreMIDI directly. A Linux/Windows build would add an
-  ALSA/WinMM or RtMidi backend behind the existing `mididev.h` interface.
-  Live play has been exercised on macOS/CoreAudio only.
+- **Live path: macOS verified, Windows written-but-untested, Linux TODO.**
+  Audio (miniaudio) is cross-platform; MIDI input has a per-platform backend
+  behind `mididev.h` — CoreMIDI (`coremidi.c`, verified on macOS) and winmm
+  (`winmm.c`, **compiles per the Win32 docs but unrun on real hardware**).
+  Linux still needs an ALSA backend behind the same interface.
 - **Wave editor GUI** — not ported.
 - **SMPTE-timed** MIDI files are rejected; only metric (ticks-per-quarter)
   timing is supported.
