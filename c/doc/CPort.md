@@ -47,24 +47,39 @@ No CMake (or a broken install)? A plain Makefile builds the same binaries
 into `c/build/` with nothing but a C compiler:
 
 ```
-cd c && make            # offline tools + tests + benches (+ live `o` on macOS)
+cd c && make            # offline tools + tests + benches
+                        #   (+ live `o` on macOS and Windows)
 make test               # build and run the unit tests
 make compile_commands.json   # editor IntelliSense DB (see below)
 ```
 
+The Makefile detects the platform from `uname` and builds the live `o`
+with the right device layer: CoreAudio/CoreMIDI frameworks on macOS,
+`winmm` + `ole32` (WASAPI) on Windows. On Linux it builds only the offline
+tools — live audio there needs an ALSA MIDI backend that doesn't exist yet.
+
 **Windows.** The offline tools and the engine are plain C and build with
-any compiler. For the live `o` (WASAPI audio out + winmm MIDI in), use the
-CMake path with **MinGW-w64** (`gcc`/`clang` — the engine relies on C11
-`stdatomic` and `clock_gettime`/`nanosleep`, which MinGW-w64 provides and
-older MSVC does not):
+any compiler. For the live `o` (WASAPI audio out + winmm MIDI in), use
+**MinGW-w64** (`gcc`/`clang` — the engine relies on C11 `stdatomic` and
+`clock_gettime`/`nanosleep`, which MinGW-w64 provides and older MSVC does
+not). Either build path works from an MSYS2/MinGW (or Cygwin) shell:
 
 ```
-cmake -S c -B c/build -G "MinGW Makefiles" && cmake --build c/build
+cd c && make o                                          # plain Makefile -> build/o.exe
+cmake -S c -B c/build -G "MinGW Makefiles" && cmake --build c/build   # or CMake
 ```
 
-CMake auto-selects the winmm MIDI backend and links `winmm`/`ole32`. The
-`Makefile` is POSIX (macOS/Linux); on Windows use CMake. **The winmm
-backend compiles to the Win32 docs but has not been run on real hardware.**
+Both select the winmm MIDI backend and link `winmm`/`ole32`; the Makefile
+emits `build/o.exe` (MinGW gcc appends the suffix). **The winmm backend
+compiles to the Win32 docs but has not been run on real hardware.**
+
+The Makefile's `uname` check also matches `CYGWIN*`, so the live `o` will
+build from a Cygwin shell too — but **MinGW-w64 is the intended target.**
+Cygwin's `gcc` links against `cygwin1.dll` and routes through its POSIX
+emulation layer rather than producing a native Win32 binary the way MinGW
+does, adding a runtime indirection on a real-time audio path. Prefer
+MinGW-w64 (which CMake's `-G "MinGW Makefiles"` also assumes); treat the
+Cygwin build as a best-effort convenience, not a tested configuration.
 
 **Editor setup.** If VS Code / clangd flags includes like `<stdatomic.h>`
 as undefined, it just doesn't know the include paths or the C11 standard.

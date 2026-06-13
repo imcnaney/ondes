@@ -1,18 +1,20 @@
 # Plain-make build for the C port - an alternative to CMake for anyone who
 # doesn't have (or doesn't want to fight) a working cmake. No dependencies
 # beyond a C compiler; the offline tools need nothing else, and the live
-# tool `o` links the macOS system frameworks (CoreAudio/CoreMIDI).
+# tool `o` links the platform device APIs (CoreAudio/CoreMIDI on macOS,
+# miniaudio's WASAPI + winmm on Windows via MSYS2/MinGW or Cygwin).
 #
 #   make            # build everything (offline tools + tests + benches,
-#                   #   plus the live `o` synth on macOS)
+#                   #   plus the live `o` synth on macOS / Windows)
 #   make p          # just the MIDI-file -> WAV renderer
-#   make o          # just the live synth (macOS)
+#   make o          # just the live synth (macOS / Windows)
 #   make test       # build and run the unit tests
 #   make compile_commands.json   # editor IntelliSense database (clangd / VS Code)
 #   make clean
 #
 # Binaries land in build/ (same place CMake puts them), so the regression
-# scripts (regression/check_c.sh etc.) work whichever build you use.
+# scripts (regression/check_c.sh etc.) work whichever build you use. On
+# Windows the live synth is build/o.exe (MinGW gcc appends .exe).
 
 CC      ?= cc
 CFLAGS  ?= -std=gnu11 -O3 -Wall -Wextra
@@ -30,13 +32,29 @@ LIB_OBJ := $(LIB_SRC:%.c=$(OBJ)/%.o)
 
 UNAME := $(shell uname)
 
+# Windows shells (MSYS2/MinGW, Cygwin) report MINGW*/MSYS*/CYGWIN* from uname.
+# There, the live synth links winmm (MIDI in) + ole32 (miniaudio's WASAPI) and
+# the binary is build/o.exe; macOS links the CoreAudio/CoreMIDI frameworks.
+WINDOWS := $(filter MINGW% MSYS% CYGWIN%,$(UNAME))
+ifneq (,$(WINDOWS))
+EXE := .exe
+endif
+O_BIN := $(BUILD)/o$(EXE)
+
 BINS := $(BUILD)/p $(BUILD)/ondes_tests $(BUILD)/note_setup $(BUILD)/render_throughput
 ifeq ($(UNAME),Darwin)
-BINS += $(BUILD)/o
+BINS += $(O_BIN)
+else ifneq (,$(WINDOWS))
+BINS += $(O_BIN)
 endif
 
-.PHONY: all clean test
+.PHONY: all clean test o p
 all: $(BINS)
+
+# Convenience aliases so `make o` / `make p` work regardless of the build dir
+# or the platform's executable suffix (build/o.exe on Windows).
+o: $(O_BIN)
+p: $(BUILD)/p
 
 # --- offline tools, tests, benches (portable, no extra deps) ---
 $(BUILD)/p: src/cmd/p.c $(LIB_OBJ)
@@ -48,13 +66,21 @@ $(BUILD)/note_setup: bench/note_setup.c $(LIB_OBJ)
 $(BUILD)/render_throughput: bench/render_throughput.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $^ $(LDLIBS) -o $@
 
-# --- live synth (macOS): miniaudio (audio out) + CoreMIDI (MIDI in) ---
+# --- live synth: miniaudio (audio out) + per-platform MIDI in ---
+# macOS: CoreMIDI + the CoreAudio frameworks. Windows: winmm for MIDI in,
+# ole32 for miniaudio's WASAPI backend.
 MA_INC := -Ithird_party/miniaudio
-FRAMEWORKS := -framework CoreFoundation -framework CoreAudio \
-              -framework AudioToolbox -framework AudioUnit -framework CoreMIDI
-$(BUILD)/o: src/cmd/o.c src/audiodev/audiodev.c src/audiodev/miniaudio_impl.c \
-            src/mididev/coremidi.c $(LIB_OBJ)
-	$(CC) $(CFLAGS) $(CPPFLAGS) $(MA_INC) $^ $(LDLIBS) $(FRAMEWORKS) -o $@
+ifeq ($(UNAME),Darwin)
+ONDES_MIDI_SRC := src/mididev/coremidi.c
+ONDES_LIVE_LIBS := -framework CoreFoundation -framework CoreAudio \
+                   -framework AudioToolbox -framework AudioUnit -framework CoreMIDI
+else
+ONDES_MIDI_SRC := src/mididev/winmm.c
+ONDES_LIVE_LIBS := -lwinmm -lole32
+endif
+$(O_BIN): src/cmd/o.c src/audiodev/audiodev.c src/audiodev/miniaudio_impl.c \
+          $(ONDES_MIDI_SRC) $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(MA_INC) $^ $(LDLIBS) $(ONDES_LIVE_LIBS) -o $@
 
 # --- library objects ---
 $(OBJ)/%.o: %.c
@@ -72,7 +98,10 @@ DB_SRC := $(LIB_SRC) src/cmd/p.c test/test_main.c bench/note_setup.c \
           bench/render_throughput.c
 ifeq ($(UNAME),Darwin)
 DB_SRC += src/cmd/o.c src/audiodev/audiodev.c src/audiodev/miniaudio_impl.c \
-          src/mididev/coremidi.c
+          $(ONDES_MIDI_SRC)
+else ifneq (,$(WINDOWS))
+DB_SRC += src/cmd/o.c src/audiodev/audiodev.c src/audiodev/miniaudio_impl.c \
+          $(ONDES_MIDI_SRC)
 endif
 .PHONY: compile_commands.json
 compile_commands.json:
